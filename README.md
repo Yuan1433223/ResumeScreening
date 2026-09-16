@@ -219,6 +219,9 @@ P1（12 个）：分页解析、Mock 抽取（事实/任职/英语否定）、�
 P2（9 个）：审批前不排期、重复批准幂等、评估版本冲突、崩溃后恢复（审批已入库未恢复）、
 6 人争 4 时段（4 confirmed + 2 waitlist + 无重复占位）、通知失败重试不重复建会、
 重复排期幂等、批量单项失败其余完成。
+T1–T5 增量（测试数 42→46→59→65→75→84）：恢复边界（`test_t1_recovery_boundary.py`）、
+身份三分离（`test_t2_identity.py`）、模型抽取器与云端客户端（`test_t3_*.py`）、
+评测 runner（`test_t4_eval_runner.py`）、API（`test_t5_api.py`，合成 PDF 快速隔离）。
 
 ## P2 变更说明（相对 P1）
 
@@ -297,6 +300,19 @@ P2（9 个）：审批前不排期、重复批准幂等、评估版本冲突、�
 - 口径与用法见 `eval/README.md`；数据边界：真实简历本地评测与云端调用已获用户确认，
   公开产物仅放脱敏聚合（`labels/`、`results/` 不入库）
 - 当前可跑：无标注基线（证据/路由/成本质量）→ 有标注后的事实准确率对照
+
+## T5a 服务层（FastAPI 工作台后端）
+
+- 依赖：`fastapi / uvicorn / httpx`（已加入 requirements.txt）；启动：
+  `.\\.venv\\Scripts\\python.exe -m uvicorn app.api:app --port 8017`
+- 接口（复用现有 workflow/repository，数据以 SQLite 为唯一事实来源）：
+  - `POST /api/batches`（`{limit, extractor}`）同步创建批次；`GET /api/batches/{batch_id}` 查询
+  - `GET /api/documents/{document_id}/review` 复核详情：原文分页 + 事实/证据 + 证据校验 + 评估明细
+  - `POST /api/documents/{document_id}/approve`（`{decision, reason}`）提交审批并恢复任务
+- 复核页原文：`pages` 表此前无写入方，复核接口按需解析并缓存（`save_pages` 落地为真实缓存层，
+  同一文档第二次复核免重解析；JPG/OCR 首访约 30–60s，PDF 秒级）
+- 同内容文件重复上传 → 按 sha 去重为同一文档/同一 run 行（批次行数 ≤ 文件数，属幂等设计）
+- 限制：批次为同步执行且仅支持 mock 抽取；模型抽取接入工作台与后台任务化属 T5c/T9
 
 ## 注意事项
 

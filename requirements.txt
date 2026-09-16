@@ -16,4 +16,8 @@ onnxruntime==1.30.0
 opencv-python-headless==5.0.0.93
 pytest==9.1.1
 python-dotenv==1.2.3
+# T5a 服务层（FastAPI 工作台后端；TestClient 需 httpx）
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+httpx==0.28.1
 # 传递依赖由 pip 自动解析；以上为直接使用项。
