@@ -139,3 +139,62 @@ def test_approve_bad_decision():
     doc_id = created["rows"][0]["document_id"]
     r = client.post(f"/api/documents/{doc_id}/approve", json={"decision": "maybe"})
     assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# T5b 补充端点：简历库 / 上传 / 排期
+# ---------------------------------------------------------------------------
+def test_list_resumes():
+    r = client.get("/api/resumes")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 2
+    assert {f["file_name"] for f in body["files"]} == {"cv_test.pdf", "cv_test2.pdf"}
+
+
+def test_upload_resume(tmp_path):
+    pdf = _minimal_pdf("New candidate, bridge design, 2020-2023")
+    r = client.post("/api/upload",
+                    files={"file": ("new_cv.pdf", pdf, "application/pdf")})
+    assert r.status_code == 200
+    assert r.json()["file_name"] == "new_cv.pdf"
+    # 已写入 fake RESUME_DIR，可被批次扫描到
+    r = client.get("/api/resumes")
+    assert r.json()["total"] == 3
+
+
+def test_upload_rejects_bad_ext():
+    r = client.post("/api/upload",
+                    files={"file": ("evil.exe", b"MZ", "application/octet-stream")})
+    assert r.status_code == 400
+
+
+def test_scheduling_empty_before_batch():
+    r = client.get("/api/scheduling")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["batch_id"] is None
+    assert body["round"] is None
+
+
+def test_scheduling_run_requires_batch():
+    r = client.post("/api/scheduling/run")
+    assert r.status_code == 400
+
+
+def test_scheduling_flow():
+    created = client.post("/api/batches", json={"limit": 1}).json()
+    doc_id = created["rows"][0]["document_id"]
+    client.post(f"/api/documents/{doc_id}/approve", json={"decision": "approve"})
+    r = client.post("/api/scheduling/run")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["round"] is not None
+    assert body["round"]["status"] in ("frozen", "scheduled")
+    assert len(body["slots"]) == 4
+    assert len(body["bookings"]) >= 1
+    confirmed = [b for b in body["bookings"] if b["status"] == "confirmed"]
+    assert confirmed, "已批准候选人应获得确认时段"
+    # 幂等：重复排期返回 409（提示直接查询）
+    r2 = client.post("/api/scheduling/run")
+    assert r2.status_code == 409

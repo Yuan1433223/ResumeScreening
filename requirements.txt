@@ -20,4 +20,5 @@ python-dotenv==1.2.3
 fastapi==0.141.1
 uvicorn[standard]==0.53.0
 httpx==0.28.1
+python-multipart==0.0.20
 # 传递依赖由 pip 自动解析；以上为直接使用项。

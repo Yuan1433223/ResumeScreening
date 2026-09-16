@@ -314,6 +314,19 @@ T1–T5 增量（测试数 42→46→59→65→75→84）：恢复边界（`test
 - 同内容文件重复上传 → 按 sha 去重为同一文档/同一 run 行（批次行数 ≤ 文件数，属幂等设计）
 - 限制：批次为同步执行且仅支持 mock 抽取；模型抽取接入工作台与后台任务化属 T5c/T9
 
+## T5b 前端工作台（React + TypeScript + Vite）
+
+- 目录 `frontend/`；三页：**批次**（上传/创建批次/结果表）、**复核**（左原文右事实证据，
+  点击事实在原文高亮定位，提交审批）、**排期**（时段表 + 预约/通知状态，幂等生成）
+- 启动（两个终端）：
+  - 后端：`.\.venv\Scripts\python.exe -m uvicorn app.api:app --port 8017`
+  - 前端：`cd frontend; npm install; npm run dev`（http://localhost:5173 ，`/api` 代理到 8017）
+- 新增后端端点：`GET /api/resumes`（简历库列表）、`POST /api/upload`（上传简历）、
+  `GET /api/scheduling` / `POST /api/scheduling/run`（排期查询与幂等生成）；
+  `POST /api/batches` 现在会真实创建 batch 行（此前只有 demo 建）
+- 视觉：系统字体、白/浅灰、单一墨青强调色，无渐变/阴影堆砌；状态用文字 + 小圆点
+- 构建验证：`npm run build`（tsc 类型检查 + vite 产物）；API 测试 15 项（合成 PDF 快速隔离）
+
 ## 注意事项
 
 - 图片简历 OCR：优先 tesseract（系统安装时）；未安装时自动回退 rapidocr-onnxruntime

@@ -383,6 +383,14 @@ class Repository:
             )
         return Batch(id=batch_id, job_version=job_version)
 
+    def latest_batch_id(self) -> Optional[str]:
+        """最近一次有 run 行的批次（按行插入顺序，重启后仍可用）。"""
+        row = self._conn.execute(
+            "SELECT batch_id FROM runs WHERE batch_id IS NOT NULL "
+            "ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        return row["batch_id"] if row else None
+
     def get_batch(self, batch_id: str) -> Optional[Dict[str, Any]]:
         row = self._conn.execute("SELECT * FROM batches WHERE id=?", (batch_id,)).fetchone()
         return dict(row) if row else None

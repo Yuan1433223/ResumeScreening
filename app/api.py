@@ -12,17 +12,20 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from src.batch import list_resumes
-from src.config import JOB_TITLE, RESUME_DIR
+from src.config import JOB_PROFILE, JOB_TITLE, RESUME_DIR
 from src.evidence import validate_evidence
 from src.extraction import extract_facts
 from src.parser import parse_document
+from src.providers.mock_calendar import get_calendar
+from src.providers.mock_notifier import get_notifier
 from src.repository import get_repository
 from src.review import submit_review
-from src.schemas import Page
+from src.schemas import Page, SchedulingRound
+from src.scheduler import _list_rounds, close_round, create_round, run_external, schedule_round
 from src.workflow import resume_run, run_single
 
 app = FastAPI(title="ResumeScreening Agent API", version="0.1.0")
@@ -86,6 +89,7 @@ def create_batch(req: BatchRequest) -> dict:
     if req.limit:
         files = files[: req.limit]
     batch_id = f"batch_{uuid.uuid4().hex[:8]}"
+    _repo().create_batch(batch_id, JOB_PROFILE.version)
     for fp in files:
         try:
             run_single(str(fp), JOB_TITLE, batch_id=batch_id)
@@ -193,6 +197,109 @@ def get_review_detail(document_id: str) -> dict:
             "extractor_version": assessment.get("extractor_version", ""),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# 简历库：列表 / 上传
+# ---------------------------------------------------------------------------
+@app.get("/api/resumes")
+def list_resume_files() -> dict:
+    files = []
+    for p in sorted(list_resumes(RESUME_DIR), key=lambda x: x.name):
+        files.append({
+            "file_name": p.name,
+            "size_bytes": p.stat().st_size,
+            "ext": p.suffix.lower().lstrip("."),
+        })
+    return {"total": len(files), "files": files}
+
+
+@app.post("/api/upload")
+async def upload_resume(file: UploadFile = File(...)) -> dict:
+    name = Path(file.filename or "resume.pdf").name
+    if Path(name).suffix.lower() not in {".pdf", ".jpg", ".jpeg", ".png", ".bmp"}:
+        raise HTTPException(status_code=400, detail="仅支持 pdf/jpg/png/bmp")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="空文件")
+    dest = Path(RESUME_DIR) / name
+    dest.write_bytes(data)
+    return {"file_name": name, "saved": str(dest)}
+
+
+# ---------------------------------------------------------------------------
+# 排期：生成 / 查询（幂等）
+# ---------------------------------------------------------------------------
+def _scheduling_view(batch_id: str) -> dict:
+    repo = _repo()
+    rounds = _list_rounds(batch_id, repo)
+    if not rounds:
+        return {"batch_id": batch_id, "round": None, "slots": [], "bookings": []}
+    r = rounds[-1]
+
+    def _cand_name(doc_id: str) -> str:
+        doc = repo.get_document(doc_id)
+        return Path(doc["storage_path"]).stem if doc else doc_id
+
+    bookings = []
+    for b in repo.get_bookings(r["id"]):
+        act = repo.get_action_by_booking(b["id"], "notify")
+        bookings.append({
+            "booking_id": b["id"],
+            "candidate": _cand_name(b["candidate_id"]),
+            "document_id": b["candidate_id"],
+            "slot_id": b["slot_id"],
+            "status": b["status"],
+            "notify_status": act["status"] if act else "",
+        })
+    slots = []
+    for s in repo.get_slots(r["id"]):
+        row = {"slot_id": s["id"], "start": s["start_at"], "end": s["end_at"],
+               "status": "open"}
+        booked = next(
+            (b for b in bookings if b["slot_id"] == s["id"] and b["status"] == "confirmed"),
+            None,
+        )
+        if booked:
+            row["status"] = "taken"
+            row["candidate"] = booked["candidate"]
+            row["document_id"] = booked["document_id"]
+        slots.append(row)
+    return {
+        "batch_id": batch_id,
+        "round": {"id": r["id"], "round_no": r["round_no"], "status": r["status"]},
+        "slots": slots,
+        "bookings": bookings,
+    }
+
+
+@app.get("/api/scheduling")
+def get_scheduling() -> dict:
+    batch_id = _repo().latest_batch_id()
+    if not batch_id:
+        return {"batch_id": None, "round": None, "slots": [], "bookings": []}
+    return _scheduling_view(batch_id)
+
+
+@app.post("/api/scheduling/run")
+def run_scheduling() -> dict:
+    repo = _repo()
+    batch_id = repo.latest_batch_id()
+    if not batch_id:
+        raise HTTPException(status_code=400, detail="尚无批次，请先创建批次")
+    rounds = _list_rounds(batch_id, repo)
+    if rounds and rounds[-1]["status"] != "open":
+        raise HTTPException(status_code=409, detail="该批次已排期（幂等：直接查询即可）")
+    if rounds and rounds[-1]["status"] == "open":
+        sround = SchedulingRound(**rounds[-1])
+    else:
+        sround = create_round(batch_id, JOB_PROFILE.version)
+    close_round(sround.id, JOB_PROFILE.version)
+    bookings = schedule_round(sround.id)
+    for b in bookings:
+        if b.status.value == "confirmed":
+            run_external(b, calendar=get_calendar(), notifier=get_notifier())
+    return _scheduling_view(batch_id)
 
 
 # ---------------------------------------------------------------------------
