@@ -285,9 +285,9 @@ P2（9 个）：审批前不排期、重复批准幂等、评估版本冲突、�
 - `ModelExtractor`（providers/model_extractor.py）：提示词 v1 + 结构化解析 +
   引用定位（**模型只回页码+原文引用，程序计算偏移**；定位失败 → 明确歧义并转人工）
   + 有限重试（规格 §7，含首次最多 3 次）+ 格式纠正一次 + 成本/耗时/token 统计（`stats`）。
-- 云端作用域预留：`CloudModelClient.complete()` 是唯一待补充的云端调用点
-  （OpenAI 兼容 /chat/completions 约定已注释）；在 `.env` 填好
-  `MODEL_API_KEY / MODEL_BASE_URL / MODEL_NAME` 后启用。
+- 云端调用已实现：`CloudModelClient.complete()` 走 OpenAI 兼容 `/chat/completions`
+  （DeepSeek / Moonshot 等通用；429/5xx/网络超时自动重试，4xx 不重试）。
+  使用只需在 `.env` 填 `MODEL_API_KEY / MODEL_BASE_URL / MODEL_NAME`（`.env` 不入版本控制）。
 - 未配置/未启用时，模型抽取返回空报告 + 警告并路由人工复核，不影响规则版流程与演示。
 - 测试：`tests/test_t3_model_extractor.py`（13 项，全部确定性、不依赖真实 API）。
 

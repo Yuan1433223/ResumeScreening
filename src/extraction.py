@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import List
 
+from .config import MODEL_CONFIG
 from .providers.mock_extractor import MockExtractor
+from .providers.model_extractor import ModelExtractor
 from .schemas import ExtractionReport, Page
 
 
@@ -23,8 +25,5 @@ def extract_facts(
         return MockExtractor().extract(document_id, pages)
     if extractor_version.startswith("model"):
         # T3：模型抽取（配置见 config.MODEL_CONFIG；未启用/未配置 → 空报告 + 警告 → 人工复核）
-        from .config import MODEL_CONFIG
-        from .providers.model_extractor import ModelExtractor
-
         return ModelExtractor(MODEL_CONFIG).extract(document_id, pages)
     raise ValueError(f"未知抽取器版本: {extractor_version}")

@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 import time
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol, Sequence
@@ -90,28 +93,49 @@ class CloudModelClient:
             raise ModelNotConfiguredError(
                 "ModelConfig 未配置 MODEL_API_KEY / MODEL_NAME；请在 .env 中补充后启用"
             )
-        # ==================================================================
-        # 云端大模型调用点（T3 预留）：由你补充实现。
-        # 约定（OpenAI 兼容 /chat/completions）：
-        #   1) POST {cfg.base_url}
-        #      headers: {"Authorization": f"Bearer {api_key}",
-        #                "Content-Type": "application/json"}
-        #      body:    {"model": cfg.model,
-        #                "messages": [{"role": "user", "content": prompt}],
-        #                "temperature": cfg.temperature}
-        #      timeout: timeout 秒（用你选用的 HTTP 库传入）
-        #   2) 成功：返回 ModelResponse(
-        #        text=resp["choices"][0]["message"]["content"],
-        #        input_tokens=resp.get("usage", {}).get("prompt_tokens", 0),
-        #        output_tokens=resp.get("usage", {}).get("completion_tokens", 0),
-        #        duration_s=实测耗时)
-        #   3) 错误分类：超时/限流/5xx 抛 ModelTransientError（外层有限重试）；
-        #      鉴权/参数等 4xx 抛 ModelPermanentError（不重试）。
-        # 若你的 provider 不是 OpenAI 兼容协议，请在本方法内适配。
-        # ==================================================================
-        raise NotImplementedError(
-            "请在 src/providers/model_extractor.py 的 CloudModelClient.complete() "
-            "填入你的云端 API 调用（.env 的 MODEL_* 字段已就绪）"
+        if not cfg.base_url:
+            raise ModelNotConfiguredError(
+                "ModelConfig 未配置 MODEL_BASE_URL；DeepSeek 可填 https://api.deepseek.com"
+            )
+
+        # OpenAI 兼容 /chat/completions（DeepSeek / Moonshot / 多数 provider 通用）
+        url = cfg.base_url.rstrip("/") + "/chat/completions"
+        body = json.dumps({
+            "model": cfg.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": cfg.temperature,
+        }).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+
+        start = time.monotonic()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # 429 限流 / 5xx 服务端错误 → 可重试；其余 4xx → 不重试
+            if e.code == 429 or 500 <= e.code < 600:
+                raise ModelTransientError(f"HTTP {e.code}: {e.reason}") from e
+            raise ModelPermanentError(f"HTTP {e.code}: {e.reason}") from e
+        except (urllib.error.URLError, socket.timeout, TimeoutError) as e:
+            raise ModelTransientError(f"网络错误/超时: {e}") from e
+        except json.JSONDecodeError as e:
+            raise ModelTransientError(f"响应不是合法 JSON: {e}") from e
+        duration_s = time.monotonic() - start
+
+        try:
+            text = payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise ModelPermanentError(f"响应结构异常（无 choices/message/content）: {e}") from e
+        usage = payload.get("usage") or {}
+        return ModelResponse(
+            text=text,
+            input_tokens=int(usage.get("prompt_tokens", 0) or 0),
+            output_tokens=int(usage.get("completion_tokens", 0) or 0),
+            duration_s=duration_s,
         )
 
 

@@ -191,8 +191,17 @@ def test_not_enabled_falls_back_to_review():
     assert any("未启用" in w for w in report.warnings)
 
 
-def test_extract_facts_model_dispatch_uses_model_extractor():
-    """extract_facts 的 model 分支不再走占位：未启用时返回 model 版本空报告。"""
+def test_extract_facts_model_dispatch_uses_model_extractor(tmp_path, monkeypatch):
+    """extract_facts 的 model 分支不再走占位：未启用时返回 model 版本空报告。
+
+    用固定配置注入，避免依赖真实 .env（启用后会走云端调用）。
+    """
+    import src.extraction as extraction_mod
+
+    monkeypatch.setattr(
+        extraction_mod, "MODEL_CONFIG",
+        ModelConfig(enabled=False, prompt_version="p1"),
+    )
     page = make_page(PAGE_TEXT)
     report = extract_facts("d", [page], extractor_version="model")
     assert report.extractor_version.startswith("model-")
