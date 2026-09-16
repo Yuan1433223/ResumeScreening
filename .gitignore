@@ -1,0 +1,19 @@
+# 真实简历与运行产物：不入版本控制（规格 §12）
+海外项目负责招聘简历/
+output/
+data/
+demo/output/
+*.xlsx
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# 环境与密钥
+.env
+.env.local
+*.key
+*.pem

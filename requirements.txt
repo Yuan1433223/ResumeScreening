@@ -1,0 +1,18 @@
+# 锁定依赖（2026-09-15 在项目 .venv 中实际验证，配合 DEVELOPMENT_SPEC.md §12"锁定依赖"）
+# 安装：uv pip install -r requirements.txt
+langgraph==1.2.10
+langgraph-checkpoint==4.1.1
+langgraph-checkpoint-sqlite==3.1.1
+langchain-core==1.5.2
+pydantic==2.13.4
+pdfplumber==0.11.10
+pdfminer.six==20260107
+Pillow==12.2.0
+pytesseract==0.3.13
+python-docx==1.2.0
+openpyxl==3.1.5
+rapidocr-onnxruntime==1.4.4
+onnxruntime==1.30.0
+opencv-python-headless==5.0.0.93
+pytest==9.1.1
+# 传递依赖由 pip 自动解析；以上为直接使用项。
