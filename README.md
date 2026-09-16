@@ -232,6 +232,11 @@ P2（9 个）：审批前不排期、重复批准幂等、评估版本冲突、�
 - **审批消费时序（T1 修复）**：`resume_run` 在恢复成功后才标记审批已消费；恢复中途崩溃时
   审批保持未消费，下次重放可继续；线程已恢复完成时重放只补收尾、不重复执行。
   故障注入与重放测试见 `tests/test_t1_recovery_boundary.py`。
+- **任务身份三分离（T2 修复）**：执行身份 = thread 身份——同文件重跑复用同一 run 行
+  （批次归属更新为最新、状态重置为新一轮）；评估版本键改为 `{document_id}_{job_version}`，
+  岗位版本升级自动产生新评估，旧版本审批对新版本无效（`VersionConflictError`）；
+  批处理弃用 `resume_{idx}` 位置编号，thread 由稳定 document 派生（跨批次稳定、不串线程）。
+  测试见 `tests/test_t2_identity.py`。
 - **全局排期**：批次审批截止后由 `scheduler` 独立排期（不在候选人图内建会）；
   冻结名单 = 已批准且审批已消费且评估版本匹配；排序 `(-known_score, -mic, -overseas, -management, id)`；
   `claim_slot` 事务内原子占槽（先插 pending 预约，占用成功才置 confirmed）；无槽转候补。

@@ -317,11 +317,18 @@ class Repository:
                    VALUES (?, ?, ?, ?, 'pending', ?)""",
                 (run_id, thread_id, document_id, batch_id, _now()),
             )
-        # 冲突时（如同 thread_id 已存在）按 thread_id 查回既有 run
         row = self._conn.execute(
             "SELECT * FROM runs WHERE id=?", (run_id,)
         ).fetchone()
         if row is None:
+            # 同 thread_id 已存在：执行身份 = thread 身份，复用同一 run 行；
+            # 更新为最新批次归属，并重置为新一轮执行（status pending、清除 finished_at）。
+            with self._conn:
+                self._conn.execute(
+                    """UPDATE runs SET batch_id=?, status='pending', finished_at=NULL
+                       WHERE thread_id=?""",
+                    (batch_id, thread_id),
+                )
             row = self._conn.execute(
                 "SELECT * FROM runs WHERE thread_id=?", (thread_id,)
             ).fetchone()

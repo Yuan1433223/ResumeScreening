@@ -29,7 +29,7 @@ from .extraction import extract_facts
 from .evidence import validate_evidence
 from .schemas import Assessment, Page, ReviewDecision, ValidationResult
 from .scorer import assess
-from .config import JOB_PROFILE, JOB_TITLE, DB_PATH, CHECKPOINT_DB_PATH
+from .config import JOB_PROFILE, JOB_TITLE, JOB_VERSION, DB_PATH, CHECKPOINT_DB_PATH
 from .repository import get_repository
 from .schemas import Assessment, Page, ReviewDecision
 
@@ -163,7 +163,7 @@ def node_score(state: ResumeState) -> ResumeState:
         state.get("employments", []),
         JOB_PROFILE,
         document_id=state.get("document_id", "doc"),
-        assessment_id=f"{state.get('document_id', 'doc')}_v1",
+        assessment_id=f"{state.get('document_id', 'doc')}_{JOB_VERSION}",
         extractor_version=state.get("extractor_version", "synthetic"),
     )
     # 评估结果落库（幂等：同 assessment id 覆盖为同一版本键）
@@ -394,13 +394,15 @@ def run_single(
         parser_version="pdfplumber/rapidocr",
     )
     run_id = _new_run_id()
-    repo.create_run(run_id, tid, doc_id, batch_id=batch_id)
+    # 执行身份 = thread 身份：同 thread 重跑时复用既有 run 行（batch 归属更新为最新），
+    # 返回真实 run id 供后续 update_run 关联评估，避免"新生成 id 无对应行"的静默失效。
+    run_row = repo.create_run(run_id, tid, doc_id, batch_id=batch_id)
 
     state: Dict[str, Any] = {
         "file_path": file_path,
         "job_title": job_title,
         "document_id": doc_id,
-        "run_id": run_id,
+        "run_id": run_row["id"],
     }
     if facts is not None:
         # 测试注入：跳过解析/抽取，直接从证据校验开始

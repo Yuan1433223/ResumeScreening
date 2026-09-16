@@ -28,7 +28,9 @@ def process_batch(limit: int = None, resume_dir: Path = RESUME_DIR) -> Dict[str,
     for idx, fp in enumerate(files, 1):
         print(f"[{idx}/{len(files)}] 处理: {fp.name}")
         try:
-            report = run_single(str(fp), JOB_TITLE, thread_id=f"resume_{idx}")
+            # 不传 thread_id：run_single 以稳定 document_id 作为 thread（跨批次稳定，
+            # 不再使用 resume_{idx} 位置编号，避免排序变化导致线程串用）
+            report = run_single(str(fp), JOB_TITLE)
         except Exception as e:
             report = {
                 "岗位": JOB_TITLE,
