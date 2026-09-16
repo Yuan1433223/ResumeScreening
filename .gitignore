@@ -17,3 +17,7 @@ __pycache__/
 .env.local
 *.key
 *.pem
+
+# T4 评测：标注样本与运行结果（含真实简历引文，仅本地）
+eval/labels/
+eval/results/

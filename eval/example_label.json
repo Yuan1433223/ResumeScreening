@@ -1,0 +1,14 @@
+{
+  "document_id": "eval_000_example",
+  "source_file": "",
+  "split": "dev",
+  "notes": "示例标注（合成内容，仅供复制格式；真实标注请填写 source_file 与真实原文）",
+  "expected_facts": [
+    {"kind": "overseas", "value": "responsible", "quote": "负责海外项目交付", "comment": ""},
+    {"kind": "total_years", "value": 19, "quote": "19年工作经验", "comment": ""},
+    {"kind": "english", "value": "usage", "quote": "英语流利", "comment": ""}
+  ],
+  "expected_employments": [
+    {"start": "2016", "end": "2020", "relevant": true, "comment": ""}
+  ]
+}
