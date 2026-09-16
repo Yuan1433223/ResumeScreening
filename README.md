@@ -98,7 +98,8 @@ flowchart LR
 ## 工作流节点
 
 1. **parse** — 分页解析 PDF/图片；正文为空/解析失败 → `needs_review`，绝不进入评分
-2. **extract** — Mock 抽取器：从页文本抽取岗位事实与任职区间，绑定精确引用（quote=原文切片）
+2. **extract** — 事实抽取：默认 Mock 抽取器（规则）；启用 MODEL_* 后走模型抽取
+   （见 T3 变更说明），均绑定精确引用（quote=原文切片）
 3. **validate** — 证据校验：引用与原文一致、页码存在、范围合法；校验失败 → `needs_review`
 4. **screen** — 三态硬条件：相关领域经验 AND（总经验≥8年 OR 直接相关≥5年）AND 项目管理经历
 5. **score** — 8 维评分（每维取最高档），输出 known_score / missing_items / 得分证据定位；结果落库
@@ -255,7 +256,8 @@ P2（9 个）：审批前不排期、重复批准幂等、评估版本冲突、�
   Evidence（start/end 精确字符偏移，quote=原文切片）；否定句（"英语不熟练"）产出 CONTRADICTED。
 - 证据校验：`evidence.py::validate_evidence` 拒绝伪造引用、错页引用、越界偏移。
 - 评分明细：每个已确认维度可回溯到证据原文（matched_facts → fact → evidence.quote）。
-- Model 抽取器为占位实现（P1 不调用外部模型，规格 §13）。
+- Model 抽取器：P1 为占位（不调用外部模型）；T3 已实现本地逻辑并预留云端调用点
+  （见 T3 变更说明）。
 
 ## OCR 支持（图片简历）
 
@@ -275,6 +277,19 @@ P2（9 个）：审批前不排期、重复批准幂等、评估版本冲突、�
 - 硬条件改为三态（pass/fail/unknown），支持年月并集去重、月份未知的区间不确定性。
 - 修复依赖：去掉未声明的 pandas（导出改用 openpyxl）、补 pydantic/pytest。
 - 去除硬编码路径 `f:/ResumeScreening`，改由项目根相对定位。
+
+## T3 变更说明（相对 P3）：云端大模型抽取（增量落地）
+
+- `ModelConfig`（schemas.py）：云端配置契约，密钥用 `SecretStr` 防日志泄露；
+  由 `.env` 装配（字段见 `.env.example` 的 `MODEL_*`）。
+- `ModelExtractor`（providers/model_extractor.py）：提示词 v1 + 结构化解析 +
+  引用定位（**模型只回页码+原文引用，程序计算偏移**；定位失败 → 明确歧义并转人工）
+  + 有限重试（规格 §7，含首次最多 3 次）+ 格式纠正一次 + 成本/耗时/token 统计（`stats`）。
+- 云端作用域预留：`CloudModelClient.complete()` 是唯一待补充的云端调用点
+  （OpenAI 兼容 /chat/completions 约定已注释）；在 `.env` 填好
+  `MODEL_API_KEY / MODEL_BASE_URL / MODEL_NAME` 后启用。
+- 未配置/未启用时，模型抽取返回空报告 + 警告并路由人工复核，不影响规则版流程与演示。
+- 测试：`tests/test_t3_model_extractor.py`（13 项，全部确定性、不依赖真实 API）。
 
 ## 注意事项
 

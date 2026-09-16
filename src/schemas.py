@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +166,28 @@ class ExtractionReport(BaseModel):
     employments: List[Employment] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)   # 抽取层面的缺失与冲突
     extractor_version: str = ""
+    stats: Dict[str, float] = Field(default_factory=dict)  # 模型调用统计：calls/tokens/duration_s/cost_cents
+
+
+class ModelConfig(BaseModel):
+    """云端大模型配置（T3）：由 .env 装配，密钥用 SecretStr 防日志泄露。
+
+    约定：以"类型化配置对象"整体注入 ModelExtractor 构造器一次（即你问的
+    "以键传递"——集中在装配边界）；后续层不接触 api_key，只传递 extractor_version。
+    """
+
+    enabled: bool = False
+    provider: str = ""                       # 如 openai-compatible / deepseek / volc
+    base_url: str = ""                       # 兼容 OpenAI 的 /chat/completions 地址
+    api_key: SecretStr = SecretStr("")
+    model: str = ""
+    timeout_seconds: float = 60.0
+    max_retries: int = 2                     # 额外重试次数（含首次共 3 次调用，规格 §7）
+    max_cost_cents: float = 0.0              # 单份预算上限；0 表示不限制
+    prompt_version: str = "p1"
+    temperature: float = 0.0
+    cost_per_1k_input_cents: float = 0.0     # 计费价目（可选，填了才估算成本）
+    cost_per_1k_output_cents: float = 0.0
 
 
 class Assessment(BaseModel):

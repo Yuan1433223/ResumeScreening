@@ -15,4 +15,5 @@ rapidocr-onnxruntime==1.4.4
 onnxruntime==1.30.0
 opencv-python-headless==5.0.0.93
 pytest==9.1.1
+python-dotenv==1.2.3
 # 传递依赖由 pip 自动解析；以上为直接使用项。

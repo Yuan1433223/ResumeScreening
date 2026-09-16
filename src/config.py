@@ -11,7 +11,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .schemas import JobProfile
+from dotenv import load_dotenv
+
+from .schemas import JobProfile, ModelConfig
+
+# 读取项目根 .env（密钥等不入版本控制；未安装/缺失时静默跳过）
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # 路径：项目相对路径，不硬编码盘符
@@ -164,4 +169,24 @@ JOB_PROFILE = JobProfile(
     hard_rules=HARD_RULES,
     rubric=SCORING,
     thresholds=THRESHOLDS,
+)
+
+# ---------------------------------------------------------------------------
+# 云端大模型配置（T3）：字段见 schemas.ModelConfig；在 .env 中补充 MODEL_* 值。
+# 未配置时 MODEL_CONFIG.enabled=False，模型抽取自动转人工复核，不影响规则版流程。
+# api_key 用 SecretStr 承载，repr/日志不会泄露明文。
+# ---------------------------------------------------------------------------
+MODEL_CONFIG = ModelConfig(
+    enabled=os.environ.get("MODEL_ENABLED", "0") in ("1", "true", "True", "yes"),
+    provider=os.environ.get("MODEL_PROVIDER", ""),
+    base_url=os.environ.get("MODEL_BASE_URL", ""),
+    api_key=os.environ.get("MODEL_API_KEY", ""),
+    model=os.environ.get("MODEL_NAME", ""),
+    timeout_seconds=float(os.environ.get("MODEL_TIMEOUT_SECONDS", "60")),
+    max_retries=int(os.environ.get("MODEL_MAX_RETRIES", "2")),
+    max_cost_cents=float(os.environ.get("MODEL_MAX_COST_CENTS", "0")),
+    prompt_version=os.environ.get("MODEL_PROMPT_VERSION", "p1"),
+    temperature=float(os.environ.get("MODEL_TEMPERATURE", "0")),
+    cost_per_1k_input_cents=float(os.environ.get("MODEL_COST_PER_1K_INPUT_CENTS", "0")),
+    cost_per_1k_output_cents=float(os.environ.get("MODEL_COST_PER_1K_OUTPUT_CENTS", "0")),
 )

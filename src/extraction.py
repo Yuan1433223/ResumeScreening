@@ -3,7 +3,7 @@
 
 extract_facts(document_id, extractor_version) -> ExtractionReport
 - 默认 mock 抽取器（规则，无 LLM）
-- model 抽取器为占位（P1 不调用外部模型）
+- model 抽取器（T3）：配置见 config.MODEL_CONFIG；未启用/未配置 → 空报告+警告 → 人工复核
 """
 from __future__ import annotations
 
@@ -22,8 +22,9 @@ def extract_facts(
     if extractor_version == "mock":
         return MockExtractor().extract(document_id, pages)
     if extractor_version.startswith("model"):
-        # P1 占位：不调用外部模型
-        report = ExtractionReport(extractor_version=extractor_version)
-        report.warnings.append("ModelExtractor 未启用，P1 阶段默认使用 mock 抽取器")
-        return report
+        # T3：模型抽取（配置见 config.MODEL_CONFIG；未启用/未配置 → 空报告 + 警告 → 人工复核）
+        from .config import MODEL_CONFIG
+        from .providers.model_extractor import ModelExtractor
+
+        return ModelExtractor(MODEL_CONFIG).extract(document_id, pages)
     raise ValueError(f"未知抽取器版本: {extractor_version}")
