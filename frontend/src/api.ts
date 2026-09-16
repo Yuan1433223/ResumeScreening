@@ -1,4 +1,4 @@
-import type { ApproveResult, BatchResponse, ResumeList, ReviewDetail, Scheduling } from './types'
+import type { ApproveResult, BatchTask, ResumeList, ReviewDetail, Scheduling } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init)
@@ -16,12 +16,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  createBatch: (limit: number) =>
-    request<BatchResponse>('/api/batches', {
+  createBatch: (limit: number, extractor: 'mock' | 'model') =>
+    request<BatchTask>('/api/batches', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ limit }),
+      body: JSON.stringify({ limit, extractor }),
     }),
+  getBatchTask: (taskId: string) => request<BatchTask>(`/api/batches/tasks/${taskId}`),
   listResumes: () => request<ResumeList>('/api/resumes'),
   upload: (file: File) => {
     const fd = new FormData()

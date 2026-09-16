@@ -25,3 +25,7 @@ eval/results/
 # T5b 前端：依赖与构建产物
 frontend/node_modules/
 frontend/dist/
+
+# 一次性调试/冒烟脚本（本地保留，不入库）
+_smoke_*.py
+_probe_*.py

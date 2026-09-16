@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -54,8 +55,94 @@ def health() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 批次：提交 / 查询
+# 批次：提交（后台任务）/ 查询
 # ---------------------------------------------------------------------------
+_BATCH_TASKS: Dict[str, Dict[str, Any]] = {}
+_TASKS_LOCK = threading.Lock()
+
+
+def _task_snapshot(task: Dict[str, Any]) -> dict:
+    with _TASKS_LOCK:
+        return {
+            "task_id": task["task_id"],
+            "batch_id": task["batch_id"],
+            "extractor": task["extractor"],
+            "status": task["status"],
+            "total": task["total"],
+            "done": task["done"],
+            "current_file": task.get("current_file", ""),
+            "rows": list(task["rows"]),
+            "error": task["error"],
+        }
+
+
+def _batch_worker(task: Dict[str, Any], files: List[Path]) -> None:
+    """后台线程串行跑批次；单份失败不阻断；进度逐步写入任务快照。
+
+    线程身份 = {batch_id}__{file_name}：每次批次运行独立线程，避免复用
+    旧文档线程的 END/中断检查点（T2 的"线程=文档"语义服务于 CLI 重放；
+    工作台换抽取器重跑需要全新分析）。
+    """
+    batch_id = task["batch_id"]
+    extractor = task["extractor"]
+    repo = _repo()
+    for fp in files:
+        try:
+            with _TASKS_LOCK:
+                task["current_file"] = fp.name
+            run_single(
+                str(fp),
+                JOB_TITLE,
+                batch_id=batch_id,
+                extractor_version=extractor,
+                thread_id=f"{batch_id}__{fp.name}",
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[api] 批次 {batch_id} 处理失败 {fp.name}: {e}")
+        with _TASKS_LOCK:
+            task["done"] += 1
+            task["rows"] = [_row_from_run(r) for r in repo.list_runs(batch_id=batch_id)]
+    with _TASKS_LOCK:
+        task["current_file"] = ""
+        task["status"] = "done"
+
+
+@app.post("/api/batches")
+def create_batch(req: BatchRequest) -> dict:
+    if req.extractor not in ("mock", "model"):
+        raise HTTPException(status_code=400, detail="extractor 须为 mock / model")
+    files = list_resumes(RESUME_DIR)
+    if req.limit:
+        files = files[: req.limit]
+    if not files:
+        raise HTTPException(status_code=400, detail="简历库为空")
+    batch_id = f"batch_{uuid.uuid4().hex[:8]}"
+    _repo().create_batch(batch_id, JOB_PROFILE.version)
+    task_id = f"task_{uuid.uuid4().hex[:8]}"
+    task: Dict[str, Any] = {
+        "task_id": task_id,
+        "batch_id": batch_id,
+        "extractor": req.extractor,
+        "status": "running",
+        "total": len(files),
+        "done": 0,
+        "current_file": "",
+        "rows": [],
+        "error": "",
+    }
+    with _TASKS_LOCK:
+        _BATCH_TASKS[task_id] = task
+    threading.Thread(target=_batch_worker, args=(task, files), daemon=True).start()
+    return _task_snapshot(task)
+
+
+@app.get("/api/batches/tasks/{task_id}")
+def get_batch_task(task_id: str) -> dict:
+    with _TASKS_LOCK:
+        task = _BATCH_TASKS.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
+    return _task_snapshot(task)
 def _row_from_run(run: Dict[str, Any]) -> dict:
     repo = _repo()
     doc = repo.get_document(run["document_id"]) if run.get("document_id") else None
@@ -75,33 +162,6 @@ def _row_from_run(run: Dict[str, Any]) -> dict:
         "recommendation": (assessment or {}).get("recommendation", "needs_review"),
         "missing_items": (assessment or {}).get("missing_items", []),
         "review_decision": decision,
-    }
-
-
-@app.post("/api/batches")
-def create_batch(req: BatchRequest) -> dict:
-    if req.extractor != "mock":
-        raise HTTPException(
-            status_code=400,
-            detail="T5a 批次仅支持 mock 抽取器；模型抽取走 eval runner 评测",
-        )
-    files = list_resumes(RESUME_DIR)
-    if req.limit:
-        files = files[: req.limit]
-    batch_id = f"batch_{uuid.uuid4().hex[:8]}"
-    _repo().create_batch(batch_id, JOB_PROFILE.version)
-    for fp in files:
-        try:
-            run_single(str(fp), JOB_TITLE, batch_id=batch_id)
-        except Exception as e:  # noqa: BLE001 单份失败不阻断批次
-            print(f"[api] 批次 {batch_id} 处理失败 {fp.name}: {e}")
-    rows = [_row_from_run(r) for r in _repo().list_runs(batch_id=batch_id)]
-    return {
-        "batch_id": batch_id,
-        "total": len(rows),
-        "recommended": sum(1 for r in rows if r["recommendation"] == "recommend"),
-        "review_pending": sum(1 for r in rows if r["review_decision"] == "pending"),
-        "rows": rows,
     }
 
 

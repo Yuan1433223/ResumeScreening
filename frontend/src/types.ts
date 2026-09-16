@@ -23,6 +23,18 @@ export interface BatchResponse {
   rows: BatchRow[]
 }
 
+export interface BatchTask {
+  task_id: string
+  batch_id: string
+  extractor: 'mock' | 'model'
+  status: 'running' | 'done'
+  total: number
+  done: number
+  current_file: string
+  rows: BatchRow[]
+  error: string
+}
+
 export interface ResumeList {
   total: number
   files: { file_name: string; size_bytes: number; ext: string }[]

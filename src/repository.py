@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from datetime import datetime, UTC
+from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .config import DB_PATH
 from .schemas import (
@@ -32,9 +34,15 @@ def _now() -> str:
 
 
 class Repository:
-    """单文件 SQLite 仓库；所有写操作使用显式事务。"""
+    """单文件 SQLite 仓库；所有写操作使用显式事务。
+
+    T5c 线程安全：实例持有 RLock，全部公开方法经 _synchronized 包裹——
+    后台批次线程与 FastAPI 线程池共用同一连接（check_same_thread=False）时
+    串行化所有数据库访问，避免游标竞争。
+    """
 
     def __init__(self, db_path: str | Path = DB_PATH):
+        self._lock = threading.RLock()
         self.db_path = str(db_path)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
@@ -659,6 +667,29 @@ class Repository:
 
 
 _default_repo: Optional[Repository] = None
+
+
+def _synchronized(method: Callable[..., Any]) -> Callable[..., Any]:
+    """用实例 RLock 包裹公开方法（RLock 可重入，方法间互调安全）。"""
+
+    @wraps(method)
+    def wrapper(self: Repository, *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
+# 类定义完成后统一包裹全部公开实例方法，实现连接级线程安全（T5c）。
+# staticmethod（delete_checkpoint_threads 操作检查点库而非 _conn）不包裹。
+for _name in list(vars(Repository)):
+    if not _name.startswith("_") and not isinstance(
+        vars(Repository)[_name], staticmethod
+    ):
+        _member = getattr(Repository, _name)
+        if callable(_member):
+            setattr(Repository, _name, _synchronized(_member))
+del _name, _member
 
 
 def get_repository(db_path: str | Path | None = None) -> Repository:

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """T5a API 测试：批次、复核、审批（TestClient + 隔离数据库 + 合成 PDF，不碰真实网络/简历库）。"""
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -64,12 +65,26 @@ def test_health():
     assert r.json()["status"] == "ok"
 
 
-def test_create_batch_mock():
-    r = client.post("/api/batches", json={"limit": 2})
+def _create_and_wait(**kwargs) -> dict:
+    """提交批次（后台任务）并轮询到完成。"""
+    r = client.post("/api/batches", json=kwargs)
     assert r.status_code == 200
-    body = r.json()
+    task = r.json()
+    assert task["status"] in ("running", "done")
+    for _ in range(300):  # 最多 ~30s
+        if task["status"] != "running":
+            break
+        time.sleep(0.1)
+        task = client.get(f"/api/batches/tasks/{task['task_id']}").json()
+    assert task["status"] == "done", task
+    return task
+
+
+def test_create_batch_mock():
+    body = _create_and_wait(limit=2)
     assert body["total"] == 2
     assert body["batch_id"].startswith("batch_")
+    assert body["extractor"] == "mock"
     rows = body["rows"]
     assert len(rows) == 2
     for row in rows:
@@ -80,7 +95,7 @@ def test_create_batch_mock():
 
 
 def test_get_batch_after_create():
-    created = client.post("/api/batches", json={"limit": 1}).json()
+    created = _create_and_wait(limit=1)
     batch_id = created["batch_id"]
     r = client.get(f"/api/batches/{batch_id}")
     assert r.status_code == 200
@@ -92,14 +107,60 @@ def test_get_batch_not_found():
     assert r.status_code == 404
 
 
-def test_create_batch_model_rejected():
-    r = client.post("/api/batches", json={"limit": 1, "extractor": "model"})
+def test_batch_task_not_found():
+    r = client.get("/api/batches/tasks/task_nonexistent")
+    assert r.status_code == 404
+
+
+def test_create_batch_bad_extractor():
+    r = client.post("/api/batches", json={"limit": 1, "extractor": "magic"})
     assert r.status_code == 400
-    assert "mock" in r.json()["detail"]
+
+
+def test_batch_row_carries_extractor_version():
+    """T5c：批次行必须携带所用抽取器版本（评估落库来源可追溯）。"""
+    body = _create_and_wait(limit=1, extractor="mock")
+    row = body["rows"][0]
+    assert row["extractor_version"].startswith("mock"), row["extractor_version"]
+
+
+def test_rerun_uses_page_cache(monkeypatch):
+    """T5c：同一文档重跑时解析走 pages 缓存，不再调用 parse_document（OCR 跳过）。
+
+    第一跑落缓存；第二跑把 parse_document 换成必炸实现，若仍完成则证明走了缓存。
+    """
+    created = _create_and_wait(limit=1, extractor="mock")
+    doc_id = created["rows"][0]["document_id"]
+    assert api_module._repo().get_pages(doc_id), "第一跑应已落 pages 缓存"
+
+    import src.workflow as wf
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("OCR/解析不应被再次调用（应命中页面缓存）")
+
+    monkeypatch.setattr(wf, "parse_document", boom)
+    created2 = _create_and_wait(limit=1, extractor="mock")
+    rows2 = created2["rows"]
+    assert rows2, created2
+    assert rows2[0]["document_id"] == doc_id
+
+
+def test_create_batch_model_disabled_degrades_to_review(monkeypatch):
+    """model 抽取未启用时任务照常完成，行进入人工复核（不报错、不调真实 API）。"""
+    from src.schemas import ModelConfig
+    import src.extraction
+
+    monkeypatch.setattr(src.extraction, "MODEL_CONFIG", ModelConfig(enabled=False))
+    body = _create_and_wait(limit=1, extractor="model")
+    assert body["extractor"] == "model"
+    assert len(body["rows"]) == 1
+    row = body["rows"][0]
+    assert row["recommendation"] in ("recommend", "needs_review", "hold")
+    assert row["review_decision"] in ("pending", "approve", "hold", "needs_review")
 
 
 def test_review_detail():
-    created = client.post("/api/batches", json={"limit": 1}).json()
+    created = _create_and_wait(limit=1)
     doc_id = created["rows"][0]["document_id"]
     r = client.get(f"/api/documents/{doc_id}/review")
     assert r.status_code == 200
@@ -119,7 +180,7 @@ def test_review_detail_not_found():
 
 
 def test_approve_flow():
-    created = client.post("/api/batches", json={"limit": 1}).json()
+    created = _create_and_wait(limit=1)
     doc_id = created["rows"][0]["document_id"]
     r = client.post(f"/api/documents/{doc_id}/approve",
                     json={"decision": "approve", "reason": "测试批准"})
@@ -135,7 +196,7 @@ def test_approve_flow():
 
 
 def test_approve_bad_decision():
-    created = client.post("/api/batches", json={"limit": 1}).json()
+    created = _create_and_wait(limit=1)
     doc_id = created["rows"][0]["document_id"]
     r = client.post(f"/api/documents/{doc_id}/approve", json={"decision": "maybe"})
     assert r.status_code == 400
@@ -183,7 +244,7 @@ def test_scheduling_run_requires_batch():
 
 
 def test_scheduling_flow():
-    created = client.post("/api/batches", json={"limit": 1}).json()
+    created = _create_and_wait(limit=1)
     doc_id = created["rows"][0]["document_id"]
     client.post(f"/api/documents/{doc_id}/approve", json={"decision": "approve"})
     r = client.post("/api/scheduling/run")

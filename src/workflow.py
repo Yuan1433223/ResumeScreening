@@ -16,6 +16,8 @@ P2 变更（对应 DEVELOPMENT_SPEC.md §7/§8/§9）：
 from __future__ import annotations
 
 import hashlib
+import json
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,7 +26,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
 from .state import ResumeState
-from .parser import parse_document, parse_name_from_filename
+from .parser import ParseStatus, parse_document, parse_name_from_filename
 from .extraction import extract_facts
 from .evidence import validate_evidence
 from .schemas import Assessment, Page, ReviewDecision, ValidationResult
@@ -32,6 +34,11 @@ from .scorer import assess
 from .config import JOB_PROFILE, JOB_TITLE, JOB_VERSION, DB_PATH, CHECKPOINT_DB_PATH
 from .repository import get_repository
 from .schemas import Assessment, Page, ReviewDecision
+
+
+# T5c：图调用（检查点读写）全局串行化——后台批次线程与 API 线程共用同一
+# SqliteSaver 连接（check_same_thread=False），需防并发游标竞争。
+_GRAPH_LOCK = threading.RLock()
 
 
 def _doc_id(file_path: str) -> str:
@@ -43,13 +50,52 @@ def _new_run_id() -> str:
     return "run_" + uuid.uuid4().hex[:12]
 
 
+def _cached_pages(repo: Any, document_id: str) -> Optional[List[Page]]:
+    """读取 pages 表缓存；无缓存或正文为空返回 None（调用方回退 OCR）。"""
+    try:
+        rows = repo.get_pages(document_id)
+    except Exception:  # noqa: BLE001 缓存读取失败不阻断解析
+        return None
+    if not rows or not any((r.get("text") or "").strip() for r in rows):
+        return None
+    pages: List[Page] = []
+    for r in rows:
+        flags = r.get("quality_flags") or []
+        if isinstance(flags, str):
+            try:
+                flags = json.loads(flags)
+            except (ValueError, TypeError):
+                flags = []
+        pages.append(
+            Page(
+                document_id=document_id,
+                page_number=int(r["page_number"]),
+                text=r.get("text") or "",
+                text_hash=r.get("text_hash") or "",
+                extraction_method=r.get("extraction_method") or "cache",
+                quality_flags=flags,
+            )
+        )
+    return pages or None
+
+
 def node_parse(state: ResumeState) -> ResumeState:
     """解析节点：分页抽取文本。失败不抛异常，进入复核。"""
     if state.get("skip_parse"):
         return state
+    import time as _t
+    _t0 = _t.monotonic()
+    print(f"[parse] 开始 {Path(state['file_path']).name}")
     try:
         document_id = state.get("document_id") or _doc_id(state["file_path"])
-        pages, status, reason = parse_document(document_id, state["file_path"])
+        # 页面缓存复用：同一文档已解析过（pages 表有正文）则跳过 OCR，换抽取器重跑秒级
+        cached = _cached_pages(get_repository(), document_id)
+        if cached is not None:
+            pages, status, reason = cached, ParseStatus.PARSED, ""
+        else:
+            pages, status, reason = parse_document(document_id, state["file_path"])
+            get_repository().save_pages(document_id, pages)
+        print(f"[parse] 完成 {_t.monotonic()-_t0:.0f}s pages={len(pages)} chars={sum(len(p.text) for p in pages)} status={status.value}")
         raw_text = "\n".join(p.text for p in pages)
         file_path = state["file_path"]
         return {
@@ -95,14 +141,17 @@ def route_after_parse(state: ResumeState) -> str:
 
 
 def node_extract(state: ResumeState) -> ResumeState:
-    """抽取节点：Mock 抽取事实与任职区间（带精确引用）。"""
+    """抽取节点：按 state 指定的抽取器（mock / model*）抽取事实与任职区间。"""
     if state.get("error") or state.get("skip_parse"):
         return state
+    extractor_version = state.get("extractor_version", "mock")
+    print(f"[extract] {state['document_id']} extractor={extractor_version} pages={len(state.get('pages', []))}")
     report = extract_facts(
         state["document_id"],
         state.get("pages", []),
-        extractor_version="mock",
+        extractor_version=extractor_version,
     )
+    print(f"[extract] {state['document_id']} 完成 facts={len(report.facts)} employments={len(report.employments)}")
     return {
         **state,
         "facts": report.facts,
@@ -316,13 +365,14 @@ _checkpointer_cache: Any = None
 def _get_checkpointer() -> Any:
     """进程内复用 SqliteSaver（持久连接 + 编译图），符合规格"服务启动时复用图"。"""
     global _checkpointer_cache
-    if _checkpointer_cache is None:
-        import sqlite3
-        from langgraph.checkpoint.sqlite import SqliteSaver
+    with _GRAPH_LOCK:
+        if _checkpointer_cache is None:
+            import sqlite3
+            from langgraph.checkpoint.sqlite import SqliteSaver
 
-        conn = sqlite3.connect(CHECKPOINT_DB_PATH, check_same_thread=False)
-        _checkpointer_cache = SqliteSaver(conn)
-    return _checkpointer_cache
+            conn = sqlite3.connect(CHECKPOINT_DB_PATH, check_same_thread=False)
+            _checkpointer_cache = SqliteSaver(conn)
+        return _checkpointer_cache
 
 
 def build_resume_graph():
@@ -370,12 +420,13 @@ def run_single(
     employments: List[Any] | None = None,
     document_id: Optional[str] = None,
     batch_id: Optional[str] = None,
+    extractor_version: str = "mock",
 ) -> Dict[str, Any]:
     """对单份简历运行完整工作流（分析闭环），停在审批节点。
 
     - thread_id 缺省时用 document_id（稳定：重复分析同一文件复用同一检查点）
-    - 返回含审批状态的分析报告；审批由 submit_review 驱动恢复
     - facts/employments 参数仅供测试注入（跳过抽取）
+    - extractor_version：mock / model（T5c：工作台批次可切换）
     """
     doc_id = document_id or _doc_id(file_path)
     tid = thread_id or doc_id
@@ -397,12 +448,14 @@ def run_single(
     # 执行身份 = thread 身份：同 thread 重跑时复用既有 run 行（batch 归属更新为最新），
     # 返回真实 run id 供后续 update_run 关联评估，避免"新生成 id 无对应行"的静默失效。
     run_row = repo.create_run(run_id, tid, doc_id, batch_id=batch_id)
+    print(f"[run] {Path(file_path).name} 开始 run={run_row['id']} thread={tid} extractor={extractor_version}")
 
     state: Dict[str, Any] = {
         "file_path": file_path,
         "job_title": job_title,
         "document_id": doc_id,
         "run_id": run_row["id"],
+        "extractor_version": extractor_version,
     }
     if facts is not None:
         # 测试注入：跳过解析/抽取，直接从证据校验开始
@@ -425,7 +478,9 @@ def run_single(
         }
         state["extractor_version"] = "injected"
 
-    result = graph.invoke(state, config={"configurable": {"thread_id": tid}})
+    with _GRAPH_LOCK:
+        result = graph.invoke(state, config={"configurable": {"thread_id": tid}})
+    print(f"[run] {Path(file_path).name} invoke 完成 run={run_row['id']}")
     report = result.get("final_report") or _report_from_state(result)
     return report
 
@@ -488,32 +543,33 @@ def resume_run(run_id: str, decision: Optional[str] = None) -> Dict[str, Any]:
     graph = build_resume_graph()
     cfg = {"configurable": {"thread_id": run["thread_id"]}}
 
-    if decision is None:
-        # 无待消费审批：返回当前状态（仍待审批）。
-        # 线程若已跑完（上次恢复在收尾前崩溃），补齐 finished 状态。
+    with _GRAPH_LOCK:
+        if decision is None:
+            # 无待消费审批：返回当前状态（仍待审批）。
+            # 线程若已跑完（上次恢复在收尾前崩溃），补齐 finished 状态。
+            snapshot = graph.get_state(cfg)
+            if not snapshot.next and snapshot.values.get("approval"):
+                repo.update_run(run_id, status="finished",
+                                finished_at=__import__("datetime").datetime.now().isoformat())
+            return _report_from_state(snapshot.values)
+
+        # 重放保护：线程已到达 END（上次恢复成功、检查点已保存，仅消费/收尾未完成）
+        # → 不重复恢复，只补消费与收尾。
         snapshot = graph.get_state(cfg)
-        if not snapshot.next and snapshot.values.get("approval"):
+        if not snapshot.next:
+            if review is not None:
+                repo.mark_review_consumed(review.id)
             repo.update_run(run_id, status="finished",
                             finished_at=__import__("datetime").datetime.now().isoformat())
-        return _report_from_state(snapshot.values)
+            return _report_from_state(snapshot.values)
 
-    # 重放保护：线程已到达 END（上次恢复成功、检查点已保存，仅消费/收尾未完成）
-    # → 不重复恢复，只补消费与收尾。
-    snapshot = graph.get_state(cfg)
-    if not snapshot.next:
+        # 正常恢复：invoke 成功后才消费审批、标记 finished。
+        # 崩溃点分析：invoke 前退出 → 审批未消费，下次重放正常恢复；
+        # invoke 后退出 → 检查点已在 END，下次走重放保护分支，不重复执行。
+        repo.update_run(run_id, status="resumed")
+        result = graph.invoke(Command(resume=decision), cfg)
         if review is not None:
             repo.mark_review_consumed(review.id)
         repo.update_run(run_id, status="finished",
                         finished_at=__import__("datetime").datetime.now().isoformat())
-        return _report_from_state(snapshot.values)
-
-    # 正常恢复：invoke 成功后才消费审批、标记 finished。
-    # 崩溃点分析：invoke 前退出 → 审批未消费，下次重放正常恢复；
-    # invoke 后退出 → 检查点已在 END，下次走重放保护分支，不重复执行。
-    repo.update_run(run_id, status="resumed")
-    result = graph.invoke(Command(resume=decision), cfg)
-    if review is not None:
-        repo.mark_review_consumed(review.id)
-    repo.update_run(run_id, status="finished",
-                    finished_at=__import__("datetime").datetime.now().isoformat())
-    return result.get("final_report") or _report_from_state(result)
+        return result.get("final_report") or _report_from_state(result)

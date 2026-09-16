@@ -219,9 +219,10 @@ P1（12 个）：分页解析、Mock 抽取（事实/任职/英语否定）、�
 P2（9 个）：审批前不排期、重复批准幂等、评估版本冲突、崩溃后恢复（审批已入库未恢复）、
 6 人争 4 时段（4 confirmed + 2 waitlist + 无重复占位）、通知失败重试不重复建会、
 重复排期幂等、批量单项失败其余完成。
-T1–T5 增量（测试数 42→46→59→65→75→84）：恢复边界（`test_t1_recovery_boundary.py`）、
+T1–T5 增量（测试数 42→46→59→65→75→84→90→92→**94**）：恢复边界（`test_t1_recovery_boundary.py`）、
 身份三分离（`test_t2_identity.py`）、模型抽取器与云端客户端（`test_t3_*.py`）、
-评测 runner（`test_t4_eval_runner.py`）、API（`test_t5_api.py`，合成 PDF 快速隔离）。
+评测 runner（`test_t4_eval_runner.py`）、API（`test_t5_api.py`，合成 PDF 快速隔离；
+T5c 新增抽取器版本透出、页面缓存复用、model 未启用降级等用例）。
 
 ## P2 变更说明（相对 P1）
 
@@ -306,13 +307,29 @@ T1–T5 增量（测试数 42→46→59→65→75→84）：恢复边界（`test
 - 依赖：`fastapi / uvicorn / httpx`（已加入 requirements.txt）；启动：
   `.\\.venv\\Scripts\\python.exe -m uvicorn app.api:app --port 8017`
 - 接口（复用现有 workflow/repository，数据以 SQLite 为唯一事实来源）：
-  - `POST /api/batches`（`{limit, extractor}`）同步创建批次；`GET /api/batches/{batch_id}` 查询
+  - `POST /api/batches`（`{limit, extractor}`）**后台任务化**创建批次（T5c）；`GET /api/batches/{batch_id}` 查询；
+    `GET /api/batches/tasks/{task_id}` 轮询任务进度（done/total/current_file/rows，2s 轮询即可）
   - `GET /api/documents/{document_id}/review` 复核详情：原文分页 + 事实/证据 + 证据校验 + 评估明细
   - `POST /api/documents/{document_id}/approve`（`{decision, reason}`）提交审批并恢复任务
 - 复核页原文：`pages` 表此前无写入方，复核接口按需解析并缓存（`save_pages` 落地为真实缓存层，
   同一文档第二次复核免重解析；JPG/OCR 首访约 30–60s，PDF 秒级）
 - 同内容文件重复上传 → 按 sha 去重为同一文档/同一 run 行（批次行数 ≤ 文件数，属幂等设计）
-- 限制：批次为同步执行且仅支持 mock 抽取；模型抽取接入工作台与后台任务化属 T5c/T9
+
+## T5c 模型接入工作台 + 批次后台任务化
+
+- **批次后台任务**：`POST /api/batches` 改为后台线程 + 内存任务表（`_BATCH_TASKS`），
+  单份失败不阻断批次，前端轮询 `GET /api/batches/tasks/{task_id}` 得进度与行结果
+- **抽取器可选**：`extractor: "mock" | "model"`；`node_extract` 由 state 的
+  `extractor_version` 驱动（默认 mock），模型未启用时自动降级为人工复核（不报错、不调 API）
+- **线程安全**：`Repository` 全部公开实例方法以 `threading.RLock` 统一包裹（连接级串行化）；
+  workflow 加 `_GRAPH_LOCK` 保护 checkpointer 初始化与 `graph.invoke`/恢复
+- **线程身份**：批次每次运行用 `{batch_id}__{file}` 独立线程，换抽取器重跑得到全新分析
+  （T2 的"线程=文档"语义仍服务于 CLI 重放）
+- **页面缓存复用**：`node_parse` 优先读 `pages` 缓存（正文非空即命中），同文档重跑跳过 OCR；
+  由测试保证 parse_document 被禁用时重跑仍成功
+- **真实冒烟**（熊世峰 JPG，5046 字）：缓存命中后模型批次 39s 完成（模型调用 37.5s、9 事实 4 任职、
+  in=3606/out=8227 token）；复核页 12 事实、证据 12/12
+- 测试：T5c 后全量 94 项通过（`tests/test_t5_api.py` 19 项）
 
 ## T5b 前端工作台（React + TypeScript + Vite）
 
@@ -330,7 +347,11 @@ T1–T5 增量（测试数 42→46→59→65→75→84）：恢复边界（`test
 ## 注意事项
 
 - 图片简历 OCR：优先 tesseract（系统安装时）；未安装时自动回退 rapidocr-onnxruntime
-  （纯 pip 依赖、模型随包内置、无需外部下载）。
+  （纯 pip 依赖、模型随包内置、无需外部下载）。**注意**：本机无 tesseract 时，
+  长图 OCR 约 250s/张（rapidocr 切片推理），是单份耗时主因；工作台依赖 pages 缓存，
+  同文档重跑免 OCR。
+- 已知口径：批次行展示该文档**最近一次**审批结果；换抽取器重跑会覆盖同文档评估，
+  旧审批仍显示属预期（请以复核页当前评估为准）。
 - 本仓库 P0–P3 为规则实现；Mock 抽取数据不代表真实准确率，真实评测需人工标注（规格 §11/§12）。
 - 真实简历、SQLite 运行数据与输出不入版本控制，公开仓库仅放合成样例（demo/samples）。
 - 已知缺口：LangGraph 检查点反序列化自定义 Pydantic 类型时打印

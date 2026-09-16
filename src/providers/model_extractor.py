@@ -118,19 +118,28 @@ class CloudModelClient:
         except urllib.error.HTTPError as e:
             # 429 限流 / 5xx 服务端错误 → 可重试；其余 4xx → 不重试
             if e.code == 429 or 500 <= e.code < 600:
+                print(f"[model] complete HTTP {e.code} 于 {time.monotonic()-start:.1f}s（可重试）")
                 raise ModelTransientError(f"HTTP {e.code}: {e.reason}") from e
+            print(f"[model] complete HTTP {e.code} 于 {time.monotonic()-start:.1f}s（不重试）")
             raise ModelPermanentError(f"HTTP {e.code}: {e.reason}") from e
         except (urllib.error.URLError, socket.timeout, TimeoutError) as e:
+            print(f"[model] complete 网络错误于 {time.monotonic()-start:.1f}s: {type(e).__name__}")
             raise ModelTransientError(f"网络错误/超时: {e}") from e
         except json.JSONDecodeError as e:
+            print(f"[model] complete 响应非 JSON 于 {time.monotonic()-start:.1f}s")
             raise ModelTransientError(f"响应不是合法 JSON: {e}") from e
         duration_s = time.monotonic() - start
 
         try:
             text = payload["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as e:
+            print(f"[model] complete 结构异常于 {duration_s:.1f}s")
             raise ModelPermanentError(f"响应结构异常（无 choices/message/content）: {e}") from e
         usage = payload.get("usage") or {}
+        print(
+            f"[model] complete ok {duration_s:.1f}s "
+            f"in={usage.get('prompt_tokens', 0)} out={usage.get('completion_tokens', 0)}"
+        )
         return ModelResponse(
             text=text,
             input_tokens=int(usage.get("prompt_tokens", 0) or 0),
@@ -306,6 +315,7 @@ class ModelExtractor:
             except ModelTransientError as e:
                 stats["calls"] += 1
                 last_error = e
+                print(f"[model] 尝试 {attempt+1} 瞬态失败，将{'重试' if attempt < cfg.max_retries else '放弃'}")
                 if attempt >= cfg.max_retries:
                     break
                 self._sleep(min(0.5 * (2 ** attempt), 4.0))
@@ -313,6 +323,7 @@ class ModelExtractor:
             except ModelPermanentError as e:
                 stats["calls"] += 1
                 last_error = e
+                print(f"[model] 尝试 {attempt+1} 永久失败: {e}")
                 break
             except ModelNotConfiguredError as e:
                 warnings.append(f"模型未配置，转人工复核：{e}")
@@ -329,10 +340,15 @@ class ModelExtractor:
             parsed = self._parse_output(resp.text)
             if parsed is not None:
                 output = parsed
+                print(
+                    f"[model] 尝试 {attempt+1} 解析成功（{len(output.facts)} 事实, "
+                    f"{len(output.employments)} 任职）"
+                )
                 break
             # 格式错误：最多纠正一次
             if not corrected:
                 corrected = True
+                print("[model] 格式错误，携带纠正提示重试一次")
                 prompt = base_prompt + _CORRECTION_HINT
                 continue
             last_error = ModelPermanentError("模型输出两次均无法解析为结构化 JSON")
