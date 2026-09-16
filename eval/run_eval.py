@@ -475,14 +475,16 @@ def main() -> None:
     summary = run(args.labels_dir, args.results_dir, extractors, args.split,
                   args.limit, tag)
     print(f"\n结果已写入：{args.results_dir / tag}")
+    has_labels = summary["run"]["scope"].startswith("标注样本")
     for ex, m in summary["per_extractor"].items():
         ev = m["evidence"]
         fm = m.get("fact_metrics")
         cost = m.get("cost")
+        status = "待标注" if has_labels and not fm else ("无标注（基线）" if not has_labels else "")
         print(f"[{ex}] 证据定位 {ev['evidence_ok_rate']:.1%} "
               f"| 截断引用 {ev['truncated_rate']:.1%} | 转人工 {ev['review_rate']:.1%}"
               + (f" | P/R/F1 {fm['precision']:.2f}/{fm['recall']:.2f}/{fm['f1']:.2f}"
-                 if fm else " | 无标注（基线）")
+                 if fm else f" | {status}")
               + (f" | 成本 {cost['cost_cents_total']:.1f}分 | P95 {cost['duration_p95_s']:.0f}s"
                  if cost else ""))
 
