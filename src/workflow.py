@@ -467,6 +467,8 @@ def resume_run(run_id: str, decision: Optional[str] = None) -> Dict[str, Any]:
 
     - decision 缺省时：读取该评估未消费的审批（进程在"审批入库"与"恢复"之间崩溃的场景）
     - 有审批则 Command(resume=decision) 恢复；无审批返回当前状态（仍待审批）
+    - 审批消费顺序（T1 修复）：只在恢复成功后才标记已消费。恢复中途崩溃时审批保持
+      未消费，下次重放可再次读取并继续；线程已恢复完成时重放只补收尾、不重复执行。
     """
     repo = get_repository()
     run = repo.get_run(run_id)
@@ -480,17 +482,36 @@ def resume_run(run_id: str, decision: Optional[str] = None) -> Dict[str, Any]:
         review = repo.get_unconsumed_review(assessment_id)
     if review is not None:
         decision = review.decision.value
-        repo.mark_review_consumed(review.id)
-        repo.update_run(run_id, status="resumed")
 
     graph = build_resume_graph()
     cfg = {"configurable": {"thread_id": run["thread_id"]}}
 
-    if decision is not None:
-        result = graph.invoke(Command(resume=decision), cfg)
-        repo.update_run(run_id, status="finished", finished_at=__import__("datetime").datetime.now().isoformat())
-        return result.get("final_report") or _report_from_state(result)
+    if decision is None:
+        # 无待消费审批：返回当前状态（仍待审批）。
+        # 线程若已跑完（上次恢复在收尾前崩溃），补齐 finished 状态。
+        snapshot = graph.get_state(cfg)
+        if not snapshot.next and snapshot.values.get("approval"):
+            repo.update_run(run_id, status="finished",
+                            finished_at=__import__("datetime").datetime.now().isoformat())
+        return _report_from_state(snapshot.values)
 
-    # 无审批：返回当前状态（待审批）
+    # 重放保护：线程已到达 END（上次恢复成功、检查点已保存，仅消费/收尾未完成）
+    # → 不重复恢复，只补消费与收尾。
     snapshot = graph.get_state(cfg)
-    return _report_from_state(snapshot.values)
+    if not snapshot.next:
+        if review is not None:
+            repo.mark_review_consumed(review.id)
+        repo.update_run(run_id, status="finished",
+                        finished_at=__import__("datetime").datetime.now().isoformat())
+        return _report_from_state(snapshot.values)
+
+    # 正常恢复：invoke 成功后才消费审批、标记 finished。
+    # 崩溃点分析：invoke 前退出 → 审批未消费，下次重放正常恢复；
+    # invoke 后退出 → 检查点已在 END，下次走重放保护分支，不重复执行。
+    repo.update_run(run_id, status="resumed")
+    result = graph.invoke(Command(resume=decision), cfg)
+    if review is not None:
+        repo.mark_review_consumed(review.id)
+    repo.update_run(run_id, status="finished",
+                    finished_at=__import__("datetime").datetime.now().isoformat())
+    return result.get("final_report") or _report_from_state(result)

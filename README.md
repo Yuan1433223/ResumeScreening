@@ -229,6 +229,9 @@ P2（9 个）：审批前不排期、重复批准幂等、评估版本冲突、�
   `Command(resume=...)` 恢复——进程在两步之间退出时，`resume_run` 读取未消费审批继续（§7）。
   注意：`SqliteSaver.from_conn_string()` 返回 context manager，不能直接作 checkpointer，
   须 `sqlite3.connect + SqliteSaver(conn)`。
+- **审批消费时序（T1 修复）**：`resume_run` 在恢复成功后才标记审批已消费；恢复中途崩溃时
+  审批保持未消费，下次重放可继续；线程已恢复完成时重放只补收尾、不重复执行。
+  故障注入与重放测试见 `tests/test_t1_recovery_boundary.py`。
 - **全局排期**：批次审批截止后由 `scheduler` 独立排期（不在候选人图内建会）；
   冻结名单 = 已批准且审批已消费且评估版本匹配；排序 `(-known_score, -mic, -overseas, -management, id)`；
   `claim_slot` 事务内原子占槽（先插 pending 预约，占用成功才置 confirmed）；无槽转候补。
