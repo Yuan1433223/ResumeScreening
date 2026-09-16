@@ -331,9 +331,11 @@ def aggregate_extractor(results: Sequence[DocResult],
         "empty_rate": empties / n if n else 0.0,
     }
 
-    # 事实准确率（有标注才计算）
-    if any(r.gt_facts for r in results):
-        m["fact_metrics"] = compute_fact_metrics(results)
+    # 事实准确率（有标注才计算；只汇总含 GT 的文档，避免未标注骨架稀释 micro）
+    labeled = [r for r in results if r.gt_facts]
+    if labeled:
+        m["fact_metrics"] = compute_fact_metrics(labeled)
+        m["fact_metrics"]["labeled_docs"] = float(len(labeled))
 
     # 任职区间匹配（标注含 expected_employments 才计算）
     emp_exp = emp_match = 0

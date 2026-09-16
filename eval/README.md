@@ -73,7 +73,7 @@ python eval/run_eval.py --extractors mock,model --split test
 
 | 指标 | 定义 |
 |---|---|
-| precision / recall / F1（micro） | 事实按 `kind + 归一化 value` 匹配（年限类转 int）；只统计 `supported` 事实；所有文档 pooled 计算 |
+| precision / recall / F1（micro） | 事实按 `kind + 归一化 value` 匹配（年限类转 int）；只统计 `supported` 事实；**只汇总含 GT 的文档**（未标注骨架不参与，避免稀释），所有已标注文档 pooled 计算 |
 | 证据定位有效率 | 抽取事实中，引文与原文切片精确一致的比例（程序定位成功） |
 | 截断引用率 | 引文起点/终点切断在 **ASCII 词/数字**中间的启发式占比（如 `'achieveme'`、`'期望薪资：4'` 被截断）；中文字符边界不算截断——提示词质量信号 |
 | 转人工率 | 含"转人工/定位失败/抽取失败/未配置"等警告的文档占比 |

@@ -10,6 +10,7 @@ import pytest
 from eval.run_eval import (
     DocResult,
     EvalLabel,
+    aggregate_extractor,
     aggregate_stats,
     compute_fact_metrics,
     employment_metrics,
@@ -149,6 +150,29 @@ def test_year_of_and_employment_match():
     label = EvalLabel(document_id="d", expected_employments=[
         {"start": "2016", "end": "2020"}])
     assert employment_metrics(report, label)["matched"] == 0
+
+
+def test_aggregate_extractor_filters_unlabeled_docs():
+    """事实指标只汇总含 GT 的文档：空 GT 骨架不稀释 precision。"""
+    p = page("负责海外项目交付。")
+    good = Evidence(id="e1", document_id="d", page_number=1, start=0, end=8,
+                    quote=p.text[0:8])
+    f = Fact(id="f1", kind="overseas", value="delivered", evidences=[good])
+    report = ExtractionReport(facts=[f], extractor_version="x")
+    r1 = DocResult(doc_id="a", extractor_version="x", report=report, pages=[p],
+                   gt_facts={("overseas", "delivered")},
+                   extracted_keys={("overseas", "delivered")},
+                   matched={("overseas", "delivered")})
+    r2 = DocResult(doc_id="b", extractor_version="x", report=report, pages=[p],
+                   gt_facts=set(), extracted_keys={("overseas", "delivered")},
+                   matched=set())
+    docs = [("a", None, None), ("b", None, None)]
+    m = aggregate_extractor([r1, r2], docs)
+    fm = m["fact_metrics"]
+    assert fm["labeled_docs"] == 1
+    assert fm["extracted_facts"] == 1   # 未标注文档不参与
+    assert fm["precision"] == 1.0
+    assert fm["recall"] == 1.0
 
 
 def test_aggregate_stats_percentiles():
