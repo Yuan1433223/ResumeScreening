@@ -23,6 +23,8 @@ export default function BatchesPage() {
   const [running, setRunning] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
+  const [uploadMsg, setUploadMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [doneMsg, setDoneMsg] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
   const pollRef = useRef<number | null>(null)
 
@@ -30,8 +32,19 @@ export default function BatchesPage() {
     api.listResumes().then(setResumes).catch((e: Error) => setError(e.message))
   }
 
+  // 刷新页面后恢复上次批次任务的轮询（任务存于后端内存表，服务重启则失效）
   useEffect(() => {
     loadResumes()
+    const saved = window.localStorage.getItem('batch_task_id')
+    if (saved) {
+      api
+        .getBatchTask(saved)
+        .then((t) => {
+          setTask(t)
+          if (t.status === 'running') startPoll(t.task_id)
+        })
+        .catch(() => window.localStorage.removeItem('batch_task_id'))
+    }
     return () => {
       if (pollRef.current != null) window.clearInterval(pollRef.current)
     }
@@ -44,24 +57,34 @@ export default function BatchesPage() {
     }
   }
 
+  const startPoll = (taskId: string) => {
+    stopPoll()
+    pollRef.current = window.setInterval(async () => {
+      try {
+        const cur = await api.getBatchTask(taskId)
+        setTask(cur)
+        if (cur.status !== 'running') {
+          stopPoll()
+          window.localStorage.removeItem('batch_task_id')
+          setDoneMsg(`批次完成：${cur.done}/${cur.total} 份已处理。`)
+        }
+      } catch (e) {
+        setError((e as Error).message)
+        stopPoll()
+        window.localStorage.removeItem('batch_task_id')
+      }
+    }, 2000)
+  }
+
   const runBatch = async () => {
     setRunning(true)
     setError('')
-    stopPoll()
+    setDoneMsg('')
     try {
       const t = await api.createBatch(limit, extractor)
       setTask(t)
-      // 轮询后台任务（模型抽取单份 60s+，必须异步）
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const cur = await api.getBatchTask(t.task_id)
-          setTask(cur)
-          if (cur.status !== 'running') stopPoll()
-        } catch (e) {
-          setError((e as Error).message)
-          stopPoll()
-        }
-      }, 2000)
+      window.localStorage.setItem('batch_task_id', t.task_id)
+      startPoll(t.task_id)
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -73,17 +96,28 @@ export default function BatchesPage() {
     if (!files || files.length === 0) return
     setUploading(true)
     setError('')
-    try {
-      for (const f of Array.from(files)) {
-        await api.upload(f)
+    setUploadMsg(null)
+    const ok: string[] = []
+    const bad: string[] = []
+    for (const f of Array.from(files)) {
+      try {
+        const r = await api.upload(f)
+        ok.push(r.file_name)
+      } catch (e) {
+        bad.push(`${f.name}：${(e as Error).message}`)
       }
-      loadResumes()
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setUploading(false)
-      if (fileRef.current) fileRef.current.value = ''
     }
+    if (ok.length > 0) {
+      loadResumes()
+      setUploadMsg({
+        ok: bad.length === 0,
+        text: bad.length === 0 ? `已上传 ${ok.length} 份` : `已上传 ${ok.length} 份，${bad.length} 份失败`,
+      })
+    } else {
+      setUploadMsg({ ok: false, text: `上传失败：${bad.join('；')}` })
+    }
+    setUploading(false)
+    if (fileRef.current) fileRef.current.value = ''
   }
 
   const rows = task && task.status === 'done' ? task.rows : []
@@ -94,6 +128,9 @@ export default function BatchesPage() {
       <p className="page-sub">上传简历，运行筛选批次；审批状态与评分结果见下表。</p>
 
       {error && <p className="error">{error}</p>}
+      {uploadMsg && (
+        <p className={uploadMsg.ok ? 'ok' : 'error'}>{uploadMsg.text}</p>
+      )}
 
       <div className="card">
         <div className="card-title">简历库（{resumes ? resumes.total : '…'} 份）</div>
@@ -138,10 +175,13 @@ export default function BatchesPage() {
       {task && task.status === 'running' && (
         <div className="card">
           <div className="card-title">
-            批次 {task.batch_id} · {task.extractor === 'model' ? '大模型' : '规则'}抽取 ·{' '}
-            {task.done}/{task.total} 已完成
+            批次运行中 · {task.extractor === 'model' ? '大模型' : '规则'}抽取 · {task.done}/{task.total}
           </div>
           <div
+            role="progressbar"
+            aria-valuenow={task.total ? Math.round((task.done / task.total) * 100) : 0}
+            aria-valuemin={0}
+            aria-valuemax={100}
             style={{
               height: 4,
               background: 'var(--border)',
@@ -170,6 +210,7 @@ export default function BatchesPage() {
           )}
         </div>
       )}
+      {doneMsg && <p className="ok">{doneMsg}</p>}
 
       {rows.length > 0 && (
         <div className="table-wrap">

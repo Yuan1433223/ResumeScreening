@@ -30,6 +30,8 @@ export const api = {
     return request<{ file_name: string; saved: string }>('/api/upload', { method: 'POST', body: fd })
   },
   review: (documentId: string) => request<ReviewDetail>(`/api/documents/${documentId}/review`),
+  /** 原始简历文件地址（PDF/图片直出，复核页左侧呈现） */
+  fileUrl: (documentId: string) => `/api/documents/${documentId}/file`,
   approve: (documentId: string, decision: string, reason: string) =>
     request<ApproveResult>(`/api/documents/${documentId}/approve`, {
       method: 'POST',

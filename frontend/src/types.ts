@@ -56,6 +56,7 @@ export interface ReviewPage {
 export interface ReviewDetail {
   document_id: string
   file_name: string
+  ext: string
   pages: ReviewPage[]
   facts: ReviewFact[]
   employments: {

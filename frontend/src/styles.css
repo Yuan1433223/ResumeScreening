@@ -258,6 +258,12 @@ table.grid tr:hover td {
   margin: 0 0 14px;
 }
 
+.ok {
+  color: var(--ok);
+  font-size: 13px;
+  margin: 0 0 14px;
+}
+
 .hint {
   color: var(--muted);
   font-size: 12.5px;
@@ -287,6 +293,49 @@ table.grid tr:hover td {
 .doc-pane .page-block {
   padding: 18px 22px;
   border-bottom: 1px solid #f0f0eb;
+}
+
+.doc-pane .view-toggle {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px 0;
+  background: #fafaf7;
+}
+
+.view-toggle .seg {
+  border: 1px solid var(--border);
+  border-bottom: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 6px 16px;
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+}
+
+.view-toggle .seg.active {
+  background: var(--card);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.pdf-frame {
+  width: 100%;
+  height: 72vh;
+  min-height: 480px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #f4f4ef;
+}
+
+.img-frame {
+  width: 100%;
+  max-height: 72vh;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #f4f4ef;
 }
 
 .doc-pane .page-tag {
@@ -338,6 +387,31 @@ mark.hit {
 .fact-value {
   font-size: 13px;
   color: #33332e;
+}
+
+.fact-group-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.03em;
+  margin: 12px 0 2px;
+}
+
+.fact-group:first-child .fact-group-title {
+  margin-top: 0;
+}
+
+.fact-pages {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.fact-status {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .fact-quote {

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from src.batch import list_resumes
@@ -212,6 +213,27 @@ def _ensure_pages(document_id: str) -> List[Dict[str, Any]]:
     return pages
 
 
+@app.get("/api/documents/{document_id}/file")
+def get_document_file(document_id: str) -> FileResponse:
+    """返回原始简历文件（复核页直接呈现，替代不可读的 OCR 文本）。"""
+    doc = _repo().get_document(document_id)
+    if not doc or not doc.get("storage_path") or not Path(doc["storage_path"]).exists():
+        raise HTTPException(status_code=404, detail=f"原始文件不存在: {document_id}")
+    media_types = {
+        ".pdf": "application/pdf",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".bmp": "image/bmp",
+    }
+    suffix = Path(doc["storage_path"]).suffix.lower()
+    return FileResponse(
+        doc["storage_path"],
+        media_type=media_types.get(suffix, "application/octet-stream"),
+        filename=Path(doc["storage_path"]).name,
+    )
+
+
 @app.get("/api/documents/{document_id}/review")
 def get_review_detail(document_id: str) -> dict:
     repo = _repo()
@@ -231,6 +253,7 @@ def get_review_detail(document_id: str) -> dict:
     return {
         "document_id": document_id,
         "file_name": Path(doc["storage_path"]).name if doc else "",
+        "ext": Path(doc["storage_path"]).suffix.lower().lstrip(".") if doc else "",
         "pages": [{"page_number": p["page_number"], "text": p["text"]} for p in pages],
         "facts": [
             {"kind": f.kind, "value": f.value, "status": f.status.value,

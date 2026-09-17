@@ -179,6 +179,24 @@ def test_review_detail_not_found():
     assert r.status_code == 404
 
 
+def test_document_file_serves_original():
+    """T5 复核改进：原始简历文件直出（PDF 返回 application/pdf 且内容为原文件）。"""
+    created = _create_and_wait(limit=1)
+    doc_id = created["rows"][0]["document_id"]
+    r = client.get(f"/api/documents/{doc_id}/file")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/pdf")
+    assert len(r.content) > 100
+    # review 详情携带扩展名（前端据此选择 iframe/img 呈现）
+    rev = client.get(f"/api/documents/{doc_id}/review").json()
+    assert rev["ext"] == "pdf"
+
+
+def test_document_file_not_found():
+    r = client.get("/api/documents/doc_nonexistent/file")
+    assert r.status_code == 404
+
+
 def test_approve_flow():
     created = _create_and_wait(limit=1)
     doc_id = created["rows"][0]["document_id"]
