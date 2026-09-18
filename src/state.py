@@ -23,6 +23,10 @@ class ResumeState(TypedDict, total=False):
     evidence_validation: Any
     extractor_version: str
 
+    # 抽取统计与校验失败点（T6 可观测性）
+    extract_stats: Dict[str, Any]
+    extract_warnings: List[str]
+
     # 三态硬条件
     hard_results: Dict[str, str]
     hard_summary: str

@@ -197,6 +197,26 @@ def test_document_file_not_found():
     assert r.status_code == 404
 
 
+def test_traces_endpoint_after_batch(monkeypatch, tmp_path):
+    """T6：批次完成后 /api/traces 返回该批次每份简历的抽取 trace。"""
+    import src.observability as obs
+
+    monkeypatch.setattr(obs, "TRACES_DIR", tmp_path / "traces")
+    body = _create_and_wait(limit=1, extractor="mock")
+    batch_id = body["batch_id"]
+    r = client.get(f"/api/traces?batch_id={batch_id}")
+    assert r.status_code == 200
+    rows = r.json()["rows"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["batch_id"] == batch_id
+    assert row["extractor"] == "mock"
+    assert row["document_id"], "trace 应带 document_id"
+    assert row["parse_status"] == "parsed"
+    assert "stats" in row, "trace 应带抽取统计（calls/耗时/token）"
+    assert "warnings" in row, "trace 应带校验失败点"
+
+
 def test_approve_flow():
     created = _create_and_wait(limit=1)
     doc_id = created["rows"][0]["document_id"]

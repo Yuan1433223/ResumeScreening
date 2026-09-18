@@ -157,6 +157,9 @@ def node_extract(state: ResumeState) -> ResumeState:
         "facts": report.facts,
         "employments": report.employments,
         "extractor_version": report.extractor_version,
+        # T6 可观测性：保留抽取统计与校验失败点，随报告/trace 带出
+        "extract_stats": report.stats,
+        "extract_warnings": report.warnings,
     }
 
 
@@ -325,6 +328,10 @@ def node_report(state: ResumeState) -> ResumeState:
         "解析状态": parsed.get("parse_status", "failed"),
         "解析错误": parsed.get("parse_error"),
         "抽取器": state.get("extractor_version", ""),
+        "document_id": state.get("document_id", ""),
+        "assessment_id": state.get("assessment_id", ""),
+        "抽取事实数": len(state.get("facts", [])),
+        "抽取任职数": len(state.get("employments", [])),
         "证据校验": None if validation is None else {
             "通过": validation.valid_count,
             "总数": validation.total,
@@ -343,6 +350,9 @@ def node_report(state: ResumeState) -> ResumeState:
         "通知状态": (approval or {}).get("notify_status", "待审批"),
         "文本长度": parsed.get("text_length", 0),
         "是否可解析文本": parsed.get("has_text", False),
+        # T6 可观测性：抽取统计（calls/耗时/token/费用）与校验失败点
+        "抽取统计": state.get("extract_stats") or {},
+        "抽取警告": state.get("extract_warnings") or [],
     }
     return {**state, "final_report": report}
 
@@ -498,6 +508,10 @@ def _report_from_state(state: ResumeState) -> Dict[str, Any]:
         "解析状态": parsed.get("parse_status", "failed"),
         "解析错误": parsed.get("parse_error"),
         "抽取器": state.get("extractor_version", ""),
+        "document_id": state.get("document_id", ""),
+        "assessment_id": state.get("assessment_id", ""),
+        "抽取事实数": len(state.get("facts", [])),
+        "抽取任职数": len(state.get("employments", [])),
         "证据校验": None if validation is None else {
             "通过": validation.valid_count,
             "总数": validation.total,
@@ -516,6 +530,8 @@ def _report_from_state(state: ResumeState) -> Dict[str, Any]:
         "通知状态": (approval or {}).get("notify_status", "待审批"),
         "文本长度": parsed.get("text_length", 0),
         "是否可解析文本": parsed.get("has_text", False),
+        "抽取统计": state.get("extract_stats") or {},
+        "抽取警告": state.get("extract_warnings") or [],
     }
 
 

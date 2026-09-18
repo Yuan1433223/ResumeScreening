@@ -21,6 +21,7 @@ from src.batch import list_resumes
 from src.config import JOB_PROFILE, JOB_TITLE, RESUME_DIR
 from src.evidence import validate_evidence
 from src.extraction import extract_facts
+from src.observability import read_traces, record_trace
 from src.parser import parse_document
 from src.providers.mock_calendar import get_calendar
 from src.providers.mock_notifier import get_notifier
@@ -91,15 +92,41 @@ def _batch_worker(task: Dict[str, Any], files: List[Path]) -> None:
         try:
             with _TASKS_LOCK:
                 task["current_file"] = fp.name
-            run_single(
+            report = run_single(
                 str(fp),
                 JOB_TITLE,
                 batch_id=batch_id,
                 extractor_version=extractor,
                 thread_id=f"{batch_id}__{fp.name}",
             )
+            # T6 可观测性：每份简历落一条 trace（抽取统计/校验失败点/审批）
+            reviews = repo.get_reviews(report.get("assessment_id", "")) \
+                if report.get("assessment_id") else []
+            record_trace({
+                "batch_id": batch_id,
+                "task_id": task["task_id"],
+                "extractor": extractor,
+                "document_id": report.get("document_id", ""),
+                "file_name": report.get("文件名", fp.name),
+                "parse_status": report.get("解析状态", ""),
+                "facts": report.get("抽取事实数", 0),
+                "employments": report.get("抽取任职数", 0),
+                "stats": report.get("抽取统计") or {},
+                "warnings": report.get("抽取警告") or [],
+                "review_decision": reviews[-1].decision.value if reviews else "pending",
+                "known_score": report.get("综合评分"),
+                "recommendation": report.get("机器建议", "needs_review"),
+            })
         except Exception as e:  # noqa: BLE001
             print(f"[api] 批次 {batch_id} 处理失败 {fp.name}: {e}")
+            record_trace({
+                "batch_id": batch_id,
+                "task_id": task["task_id"],
+                "extractor": extractor,
+                "document_id": "",
+                "file_name": fp.name,
+                "error": f"批次处理失败: {e}",
+            })
         with _TASKS_LOCK:
             task["done"] += 1
             task["rows"] = [_row_from_run(r) for r in repo.list_runs(batch_id=batch_id)]
@@ -144,6 +171,13 @@ def get_batch_task(task_id: str) -> dict:
     if task is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
     return _task_snapshot(task)
+
+
+@app.get("/api/traces")
+def list_traces(limit: int = 50, batch_id: str = "") -> dict:
+    """T6 可观测性：最近处理 trace（JSONL 落盘，前端不直接暴露）。"""
+    rows = read_traces(limit=min(limit, 200), batch_id=batch_id)
+    return {"total": len(rows), "rows": rows}
 def _row_from_run(run: Dict[str, Any]) -> dict:
     repo = _repo()
     doc = repo.get_document(run["document_id"]) if run.get("document_id") else None

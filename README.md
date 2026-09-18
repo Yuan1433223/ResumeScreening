@@ -20,8 +20,10 @@
 | 真实简历评测 | 标注样本对照 mock/model 的事实准确率、证据支持率、成本与延迟（T4） | `eval/run_eval.py` |
 | 可交互工作台 | FastAPI 后台任务化批次 + React/TS 三页（批次/复核/排期）（T5a/T5b/T5c） | `app/api.py`、`frontend/` |
 | 并发与缓存工程 | Repository 连接级 RLock、图执行锁、页面缓存复用（重跑跳过 250s OCR） | `src/repository.py`、`src/workflow.py` |
+| 可观测性 | 每份简历 trace 落盘：模型调用统计（token/耗时/费用）+ 校验失败点 + 审批（T6） | `src/observability.py`、`GET /api/traces` |
+| MCP 服务 | tools/resources/prompts 三要素，薄代理复用工作台 API，可被外部 Agent 编排（T7） | `mcp_server.py` |
 
-**测试：94 项全部通过**（规则回归 + 恢复边界 + 模型抽取器 + 评测 runner + API，均不依赖真实网络）。
+**测试：99 项全部通过**（规则回归 + 恢复边界 + 模型抽取器 + 评测 runner + API + 可观测性，均不依赖真实网络）。
 
 ---
 
@@ -136,13 +138,19 @@ flowchart LR
 
 - `eval/run_eval.py`：标注样本（`labels/`）+ runner（dev/test 划分、micro P/R/F1、
   转人工率、截断引用率、成本与延迟 P50/P95）；`results/` 输出脱敏聚合
-- **真实简历对照**（已标注 3 份 dev 样本，小样本供参考）：
+- **真实简历对照**（9/18 已标注 **7 份 dev**，tag `dev7_20260918`；test 3 份保留验收）：
 
-| 抽取器 | F1 | P / R | 备注 |
-| --- | ---: | ---: | --- |
-| mock 规则 | 0.46 | 0.45 / 0.47 | 不抽年限、关键词误报（如把"安全"专业名当质量事实） |
-| model 大模型 | 0.67 | 0.71 / 0.63 | 转人工率 33%（1/3，第 3 页噪声字符引用定位失败） |
+| 抽取器 | 样本 | P | R | F1 | 证据定位 | 截断引用 | 转人工率 | 成本/延迟 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| mock 规则 | 7 dev | 0.34 | 0.39 | **0.36** | 100% | 8.5% | 0% | 本地即时 |
+| model 大模型 | 7 dev | 0.78 | 0.68 | **0.73** | 100% | 0% | 71.4% | 9 次调用/7 份，P95 67s |
 
+- 模型相对规则：F1 0.36→0.73，引用完整（平均引文 32 字符 vs 规则 2.3 字符被截断）、
+  不误报专业名；代价是 71% 样本触发"引用定位失败→转人工"警告（保守，宁可交人工不硬凑）
+- **跨运行波动**（`eval/verify_consistency.py` 三层验证）：输入侧工作台 pages 缓存与
+  评测重新解析**逐页一致**；规则侧 mock 输出**完全一致**；模型侧不精确复现
+  （temperature=0 下仍出现 1 项事实差异，两天重跑 F1 0.67 → 0.88）。结论：评测可外推到
+  工作台，但模型需固定测试集 + 记录运行日期/模型版本（T6 已落地）
 - 模型错误主要是档位粒度与 GT 口径争议（如推断 relevant_domain=True 但 GT 未含→记 spurious，
   会低估模型）——口径本身是有价值的讨论点
 - 数据边界：真实简历本地评测与云端调用已获确认；`labels/`、`results/` 不入版本控制
@@ -159,8 +167,37 @@ flowchart LR
   Repository 公开方法 `threading.RLock` 统一包裹 + `_GRAPH_LOCK` 保护图执行；
   批次每次运行独立线程（`{batch_id}__{file}`），换抽取器重跑得到全新分析；
   `node_parse` 优先读 pages 缓存（有测试保证 parse_document 被禁用时重跑仍成功）
+- **T5d 工作台体验**：上传逐文件反馈、批次进度常驻与刷新恢复、复核页原始文件直出
+  （PDF 内嵌阅读器 / 图片直出）+ 识别文本可切换、事实按维度分组去重、枚举全部中文化
+- **T5e 一致性验证**（`eval/verify_consistency.py`）：工作台批次路径 vs 评测路径
+  三层对照——pages 输入逐页一致、mock 输出完全一致、model 输出有跨运行波动；
+  dev 未标注样本（004–010）自动生成候选事实表（`eval/labels/candidates/`，供人工审改 GT）
 - **真实冒烟**（熊世峰 JPG，5046 字）：缓存命中后模型批次 39s 完成
   （模型调用 37.5s，9 事实 4 任职，in=3606/out=8227 token）；复核页 12 事实、证据 12/12
+
+## 可观测性（T6）
+
+- 批次处理每份简历落一条 trace（`data/traces/<日期>.jsonl`，线程安全、不入库）：
+  批次/任务/抽取器、document_id/文件名、解析状态、事实与任职数、
+  **模型调用统计**（calls/耗时/输入输出 token/费用）、**校验失败点**（引用定位失败等警告）、
+  审批状态与综合评分
+- `GET /api/traces?batch_id=...&limit=50` 查询最近 trace（最新在前，可按批次过滤）
+- 用途：从候选人追到模型调用、失败、审批与重试；修改提示词后用同一批样本回归对比
+
+## MCP 服务（T7）
+
+- `mcp_server.py` 把工作台按 MCP 标准暴露（mcp 2.x，`MCPServer`）：
+  - **tools（8）**：`list_resumes` / `upload_resume` / `create_batch` / `get_batch_task` /
+    `get_review` / `approve` / `get_scheduling` / `run_scheduling`
+  - **resources（2）**：`resumes://list`、`resumes://{document_id}/review`
+  - **prompts（1）**：`review_resume`——按岗位标准评审指定简历的完整提示词
+- 实现为**薄代理**：HTTP 复用本机 FastAPI（8017）为唯一事实来源——批次后台任务、
+  审批、pages 缓存、trace 全部一致，MCP 层不重复业务逻辑
+- 连通性已用官方客户端验证（`mcp_client_test.py`，stdio）：
+  握手 → 三要素列举 → `create_batch → get_batch_task 轮询 → get_review → approve`
+  全链路通过，resource 与 prompt 可读
+- 运行：先起后端（8017），再 `python mcp_server.py`；外部 Agent（如豆包）可按
+  stdio 传输接入，`RESUME_API_BASE` 可覆盖 API 地址
 
 ## CLI 命令
 
@@ -203,9 +240,11 @@ ResumeScreening/
 ├── .env.example                 # 云端模型配置模板（MODEL_* 字段，密钥不入库）
 ├── main.py                      # CLI 入口（analyze/batch/review/resume/schedule/export/clean/graph）
 ├── app/
-│   └── api.py                   # FastAPI 工作台后端（批次后台任务/复核/审批/排期）[T5a/T5c]
+│   └── api.py                   # FastAPI 工作台后端（批次后台任务/复核/审批/排期/traces）[T5a/T5c/T6]
 ├── frontend/                    # React+TS+Vite 工作台（批次/复核/排期三页）[T5b]
-├── eval/                        # 评测：标注格式 + runner + 结果（labels/results 不入库）[T4]
+├── mcp_server.py                # MCP 服务（tools/resources/prompts，stdio，薄代理 8017）[T7]
+├── mcp_client_test.py           # MCP 官方客户端连通性测试（全链路）[T7]
+├── eval/                        # 评测：标注格式 + runner + 一致性验证（labels/results 不入库）[T4/T5e]
 ├── demo/
 │   ├── run_demo.py              # 一键演示脚本（按规格 §12 顺序，合成数据）[P3]
 │   ├── make_samples.py          # 合成样例生成器（最小 PDF + 坏文件）[P3]
@@ -220,19 +259,20 @@ ResumeScreening/
 │   ├── evidence.py              # 证据引用校验（validate_evidence）
 │   ├── scorer.py                # 三态硬条件 + 8 维规则评分 + 建议路由
 │   ├── workflow.py              # LangGraph 工作流（parse→…→score→review(interrupt)→apply→report）
+│   ├── observability.py         # trace JSONL 落盘/查询（模型调用统计 + 校验失败点）[T6]
 │   ├── repository.py            # SQLite 仓库（WAL、唯一约束、幂等 API、RLock、页面缓存）
 │   ├── review.py                # 审批服务（版本校验、request_id 幂等、恢复任务）
 │   ├── scheduler.py             # 全局排期器（冻结名单排序、原子占槽、外部动作）
 │   ├── providers/               # mock_extractor / model_extractor / mock_calendar / mock_notifier
 │   └── batch.py                 # 批量处理与导出（JSON/Excel/Markdown）
-├── tests/                       # 94 项（conftest 临时 SQLite 隔离，不依赖真实网络）
+├── tests/                       # 99 项（conftest 临时 SQLite 隔离，不依赖真实网络）
 └── 海外项目负责招聘简历/          # 真实数据源（仅本地，不入版本控制）
 ```
 
 ## 测试
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q   # 94 passed
+.\.venv\Scripts\python.exe -m pytest -q   # 99 passed
 ```
 
 | 批次 | 数量 | 覆盖 |
@@ -246,6 +286,7 @@ ResumeScreening/
 | T3 云端客户端 | 6 | 429/5xx 重试、4xx 不重试、响应结构异常（mock HTTP） |
 | T4 评测 runner | 10 | 指标计算、dev/test 划分、无标注基线、截断引用率 |
 | T5 API | 19 | 批次/复核/审批、后台任务轮询、抽取器版本透出、页面缓存复用、model 未启用降级 |
+| T6 可观测性 | 3 | trace 落盘/查询端点、批次后 traces 可查 |
 
 ---
 
@@ -272,6 +313,8 @@ ResumeScreening/
 ## 简历上的项目描述（据实填写模板）
 
 > 基于 LangGraph 实现带证据引用和人工审批的简历筛选辅助工作流：支持持久化恢复、
-> 批次处理、幂等模拟排期，并接入云端大模型抽取与真实简历评测（94 项测试全绿；
-> 小样本标注对照 model F1 0.67 vs 规则 0.46）；配套 FastAPI + React/TS 可交互工作台。
+> 批次处理、幂等模拟排期，并接入云端大模型抽取与真实简历评测（99 项测试全绿；
+> 7 份真实简历标注对照 model F1 0.73 vs 规则 0.36，工作台/评测路径一致性已验证，
+> 模型调用统计与失败点可观测、可审计）；配套 FastAPI + React/TS 可交互工作台，
+> 并以 MCP 标准（tools/resources/prompts）对外暴露，可被外部 Agent 编排。
 > 在合成样本上验证了解析容错、跨进程恢复、6 人竞争 4 时段的排期闭环与外部动作幂等。
