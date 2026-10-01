@@ -1,0 +1,98 @@
+{
+  "run": {
+    "created_at": "2026-09-18T02:09:43+00:00",
+    "labeled_dev": [
+      "eval_001",
+      "eval_002",
+      "eval_003"
+    ]
+  },
+  "layer1_pages": {
+    "eval_001": {
+      "workbench_source": "cache",
+      "workbench_pages": 10,
+      "eval_pages": 10,
+      "pages_identical": true,
+      "chars": 18341
+    },
+    "eval_002": {
+      "workbench_source": "cache",
+      "workbench_pages": 1,
+      "eval_pages": 1,
+      "pages_identical": true,
+      "chars": 1649
+    },
+    "eval_003": {
+      "workbench_source": "cache",
+      "workbench_pages": 1,
+      "eval_pages": 1,
+      "pages_identical": true,
+      "chars": 1263
+    }
+  },
+  "layer2_mock": {
+    "eval_001": {
+      "workbench_matched": "management=scope_and_results, overseas=responsible, project_scale=quantified, quality_safety=two_plus",
+      "prior_matched": "management=scope_and_results, overseas=responsible, project_scale=quantified, quality_safety=two_plus",
+      "identical": true
+    },
+    "eval_002": {
+      "workbench_matched": "quality_safety=two_plus, relevant_domain=True",
+      "prior_matched": "quality_safety=two_plus, relevant_domain=True",
+      "identical": true
+    },
+    "eval_003": {
+      "workbench_matched": "english=usage, management=managed, project_scale=quantified",
+      "prior_matched": "english=usage, management=managed, project_scale=quantified",
+      "identical": true
+    }
+  },
+  "layer3_model": {
+    "eval_001": {
+      "workbench_matched": "english=usage, management=scope_and_results, mobility=travel_ok, overseas=responsible, project_scale=quantified, total_years=19",
+      "prior_matched": "english=usage, management=scope_and_results, mobility=travel_ok, overseas=responsible, project_scale=quantified, total_years=19",
+      "identical": false,
+      "calls": 2.0,
+      "duration_s": 66.9,
+      "input_tokens": 11014.0,
+      "output_tokens": 15913.0
+    },
+    "eval_002": {
+      "workbench_matched": "management=clear_scope, quality_safety=two_plus, relevant_domain=True, steel_mic_experience=responsible",
+      "prior_matched": "quality_safety=two_plus, relevant_domain=True, steel_mic_experience=responsible",
+      "identical": false,
+      "calls": 1.0,
+      "duration_s": 79.4,
+      "input_tokens": 1604.0,
+      "output_tokens": 19222.0
+    },
+    "eval_003": {
+      "workbench_matched": "english=usage, management=managed, overseas=collab, project_scale=quantified, total_years=4",
+      "prior_matched": "english=usage, project_scale=quantified, total_years=4",
+      "identical": false,
+      "calls": 1.0,
+      "duration_s": 55.0,
+      "input_tokens": 1515.0,
+      "output_tokens": 11789.0
+    },
+    "workbench_f1": {
+      "gt_facts": 19.0,
+      "extracted_facts": 15.0,
+      "matched": 15.0,
+      "precision": 1.0,
+      "recall": 0.7894736842105263,
+      "f1": 0.8823529411764706
+    }
+  },
+  "layer4_candidates": {
+    "generated": [
+      "eval_004",
+      "eval_005",
+      "eval_006",
+      "eval_007",
+      "eval_008",
+      "eval_009",
+      "eval_010"
+    ]
+  }
+}

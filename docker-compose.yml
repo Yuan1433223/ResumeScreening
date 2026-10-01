@@ -1,0 +1,59 @@
+# ResumeScreening 全栈一键启动
+#   首次启动前：
+#     1) （可选）复制 .env.example 为 .env，按需填 MODEL_* 开启模型抽取；
+#        不填则 MODEL_ENABLED=0，走规则版 + mock 抽取器，纯本地可跑。
+#     2) 把要扫描的简历 PDF/JPG 放到宿主机 ./resumes/ 目录（容器内挂载到
+#        /app/海外项目负责招聘简历，与 src/config.py 的 RESUME_DIR 对齐）。
+#     3) docker compose up -d --build
+#     4) 浏览器访问 http://localhost:8080  （前端 nginx 已把 /api 反代到后端）
+#
+#   开启 tesseract OCR（默认关闭，走 rapidocr-onnxruntime 回退）：
+#     编辑本文件 backend.build.args.INSTALL_TESSERACT 改为 "1"，再 up -d --build。
+
+services:
+  backend:
+    build:
+      context: .
+      args:
+        # 设为 "1" 安装 tesseract-ocr；默认 "0"。
+        INSTALL_TESSERACT: "0"
+    image: resumescreening-backend:local
+    # 后端只在容器内暴露 8017，不直接映射到宿主机；外部一律走 web(nginx) 反代。
+    expose:
+      - "8017"
+    volumes:
+      # 业务数据（SQLite + LangGraph 检查点）持久化
+      - ./data:/app/data
+      # 宿主机简历目录 -> 容器内 RESUME_DIR（路径含中文，YAML 中用引号包裹）
+      - "./resumes:/app/海外项目负责招聘简历"
+    environment:
+      # 模型抽取开关：0=规则版+mock；1=按 .env 里的 MODEL_* 配置走云端模型。
+      # 若在宿主机 .env 中配置了 MODEL_*，可去掉下行注释让容器读取；
+      # 这里直接给个默认值，避免未配置时误开。
+      - MODEL_ENABLED=${MODEL_ENABLED:-0}
+    # 把宿主机 .env（如果存在）注入容器；不存在也不报错。
+    env_file:
+      - path: ./.env
+        required: false
+    healthcheck:
+      # 与 Dockerfile HEALTHCHECK 保持一致；compose 层再声明一次以便 depends_on 判定。
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8017/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+    image: resumescreening-web:local
+    ports:
+      # 宿主机 8080 -> 容器 nginx 80
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+# 默认网络与卷由 compose 自动管理，无需显式声明。

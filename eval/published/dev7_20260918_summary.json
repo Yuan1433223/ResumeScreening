@@ -1,0 +1,70 @@
+{
+  "run": {
+    "created_at": "2026-09-18T06:25:29+00:00",
+    "extractors": [
+      "mock",
+      "model"
+    ],
+    "docs": 7,
+    "scope": "标注样本 10 份",
+    "split": "dev"
+  },
+  "per_extractor": {
+    "mock": {
+      "evidence": {
+        "evidence_ok_rate": 1.0,
+        "truncated_rate": 0.0847457627118644,
+        "avg_quote_len": 2.2796610169491527,
+        "review_rate": 0.0,
+        "empty_rate": 0.0
+      },
+      "cost": null,
+      "fact_metrics": {
+        "gt_facts": 41.0,
+        "extracted_facts": 47.0,
+        "matched": 16.0,
+        "precision": 0.3404255319148936,
+        "recall": 0.3902439024390244,
+        "f1": 0.36363636363636365,
+        "labeled_docs": 7.0
+      },
+      "employment": {
+        "expected": 31.0,
+        "matched": 30.0
+      }
+    },
+    "model": {
+      "evidence": {
+        "evidence_ok_rate": 1.0,
+        "truncated_rate": 0.0,
+        "avg_quote_len": 32.22222222222222,
+        "review_rate": 0.7142857142857143,
+        "empty_rate": 0.0
+      },
+      "cost": {
+        "docs": 7.0,
+        "calls_total": 9.0,
+        "calls_avg": 1.2857142857142858,
+        "input_tokens_total": 25756.0,
+        "output_tokens_total": 86931.0,
+        "duration_p50_s": 49.969000000011874,
+        "duration_p95_s": 66.70300000000861,
+        "cost_cents_total": 0.0,
+        "cost_cents_avg": 0.0
+      },
+      "fact_metrics": {
+        "gt_facts": 41.0,
+        "extracted_facts": 36.0,
+        "matched": 28.0,
+        "precision": 0.7777777777777778,
+        "recall": 0.6829268292682927,
+        "f1": 0.7272727272727273,
+        "labeled_docs": 7.0
+      },
+      "employment": {
+        "expected": 31.0,
+        "matched": 22.0
+      }
+    }
+  }
+}

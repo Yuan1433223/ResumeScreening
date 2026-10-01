@@ -1,0 +1,48 @@
+# 构建后端镜像时排除的内容（build context = 仓库根）
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 运行产物与业务数据（含 PII，绝不入镜像）
+data/
+output/
+demo/output/
+*.xlsx
+*.log
+
+# 真实简历目录（PII）
+海外项目负责招聘简历/
+
+# 环境与密钥
+.env
+.env.local
+*.key
+*.pem
+
+# Git / IDE
+.git/
+.gitignore
+
+# 前端依赖与构建产物（后端镜像不需要）
+frontend/node_modules/
+frontend/dist/
+
+# 评测中间产物（含 PII 引文）
+eval/labels/
+eval/results/
+
+# 一次性脚本
+_smoke_*.py
+_probe_*.py
+
+# 本仓库的部署件不打进后端镜像（前端由独立 Dockerfile 构建）
+frontend/
+docs/
+eval/published/
+Dockerfile
+docker-compose.yml
+.dockerignore
+LICENSE
+README.md

@@ -1,0 +1,8 @@
+# 构建前端镜像时排除的内容（build context = ./frontend）
+node_modules/
+dist/
+.npm/
+.cache/
+.git/
+.env*
+.dockerignore

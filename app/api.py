@@ -217,6 +217,24 @@ def get_batch(batch_id: str) -> dict:
 # ---------------------------------------------------------------------------
 # 复核：原文 + 事实/证据 + 评估
 # ---------------------------------------------------------------------------
+# GET /review 的进程内展示缓存：
+# facts 没有持久化表（repository 仅 documents/pages/assessments/reviews/runs/...），
+# 复核端点每次都现场重抽。model 抽取走云端（OpenAI 兼容），每次打开复核页都重调
+# 既慢又花钱且不确定，故按以下轻量键缓存一次抽取结果（dict + 锁，不引第三方、
+# 不新建表）：
+#   (document_id, extractor_version, assessment_id, assessment_created_at, page_count)
+# - document_id：文档维度
+# - extractor_version：与该文档最近一次 assessment 行一致（mock / model-p1 等）；
+#   换抽取器重跑批次后，assessment 行的该字段变化 → 缓存键自然变化
+# - assessment_id + created_at：批次重跑产生新 assessment 版本（save_assessment
+#   以同 id INSERT OR REPLACE 覆盖写，但 created_at 刷新）→ 旧缓存自然失效；
+#   无 assessment（边界：仅有 pages/doc）时用 ("", "")，回退 mock
+# - page_count：页数变化（重新解析/补页）也视为新版本
+# 仅服务于 GET 展示层；进程重启清空；不替代批次链路里落库的正式 assessment。
+_REVIEW_EXTRACT_CACHE: Dict[tuple, Any] = {}
+_REVIEW_CACHE_LOCK = threading.Lock()
+
+
 def _pages_as_models(pages: List[Dict[str, Any]]) -> List[Page]:
     """sqlite 行 → Page 模型（quality_flags 为 JSON 字符串，需解析）。"""
     models = []
@@ -261,10 +279,17 @@ def get_document_file(document_id: str) -> FileResponse:
         ".bmp": "image/bmp",
     }
     suffix = Path(doc["storage_path"]).suffix.lower()
+    # 关键：可在浏览器内联呈现的类型必须用 Content-Disposition: inline。
+    # 之前 FileResponse(filename=...) 默认给 attachment，PDF 在 <iframe> 中会被
+    # 浏览器当作下载处理（面板空白、不渲染）；图片走 <img> 子资源请求不受影响，
+    # 所以表现为"图片正常、PDF 空白"。未知类型保持 attachment 走下载。
     return FileResponse(
         doc["storage_path"],
         media_type=media_types.get(suffix, "application/octet-stream"),
         filename=Path(doc["storage_path"]).name,
+        content_disposition_type=(
+            "inline" if suffix in media_types else "attachment"
+        ),
     )
 
 
@@ -277,12 +302,57 @@ def get_review_detail(document_id: str) -> dict:
         raise HTTPException(status_code=404, detail=f"文档不存在: {document_id}")
     assessment = repo.get_assessment_by_document(document_id)
 
+    # assessments 表只把 hard_results / dimensions / missing_items 序列化进 payload
+    # JSON 列（save_assessment 写的是 assessment.model_dump(mode="json")），表本身没有
+    # 这三列；直接 assessment.get(...) 永远拿到默认空值。这里防御性解析 payload，
+    # 前端复核页"评估明细"卡片依赖这三个字段。known_score/score_complete/
+    # recommendation/extractor_version/job_version 是独立列，与 payload 内容一致，
+    # 以列值为准（列有 NOT NULL 默认值，即使 payload 损坏也能返回骨架）。
+    assessment_payload: Dict[str, Any] = {}
+    if assessment:
+        raw_payload = assessment.get("payload") or "{}"
+        try:
+            parsed = json.loads(raw_payload)
+            if isinstance(parsed, dict):
+                assessment_payload = parsed
+        except (ValueError, TypeError):
+            assessment_payload = {}
+
+    # 事实抽取必须与该文档最近一次实际批次所用抽取器一致：
+    # assessment 行里的 extractor_version 是"该文档最近一次实际批次"的最权威来源；
+    # 无 assessment（边界情况）时回退 mock，保持旧行为不回归。
+    raw_extractor = (assessment or {}).get("extractor_version") or "mock"
+    # assessment 行存的是抽取器自报版本（MockExtractor.version="mock-v1"，
+    # ModelExtractor.version="model-p1"）；extract_facts 分派只认 "mock" 或
+    # startswith("model")，需归一到分派键。
+    if raw_extractor.startswith("mock"):
+        dispatch_extractor = "mock"
+    elif raw_extractor.startswith("model"):
+        dispatch_extractor = raw_extractor
+    else:
+        dispatch_extractor = "mock"
+
     page_models = _pages_as_models(pages)
-    report = extract_facts(
+
+    # 进程内展示缓存：同一 (document_id, 抽取器自报版本, assessment 版本, 页数)
+    # 重复打开不重复调用云端模型；批次重跑产生新 assessment 后键变化，自然失效。
+    cache_key = (
         document_id,
-        page_models,
-        extractor_version="mock",
+        raw_extractor,
+        (assessment or {}).get("id", ""),
+        (assessment or {}).get("created_at", ""),
+        len(pages),
     )
+    with _REVIEW_CACHE_LOCK:
+        report = _REVIEW_EXTRACT_CACHE.get(cache_key)
+    if report is None:
+        report = extract_facts(
+            document_id,
+            page_models,
+            extractor_version=dispatch_extractor,
+        )
+        with _REVIEW_CACHE_LOCK:
+            _REVIEW_EXTRACT_CACHE[cache_key] = report
     validation = validate_evidence(report.facts, page_models) if report.facts else None
     return {
         "document_id": document_id,
@@ -305,11 +375,11 @@ def get_review_detail(document_id: str) -> dict:
         "warnings": report.warnings,
         "assessment": None if not assessment else {
             "job_version": assessment.get("job_version"),
-            "hard_results": assessment.get("hard_results", {}),
-            "dimensions": assessment.get("dimensions", {}),
+            "hard_results": assessment_payload.get("hard_results", {}),
+            "dimensions": assessment_payload.get("dimensions", {}),
             "known_score": assessment.get("known_score"),
             "score_complete": bool(assessment.get("score_complete")),
-            "missing_items": assessment.get("missing_items", []),
+            "missing_items": assessment_payload.get("missing_items", []),
             "recommendation": assessment.get("recommendation"),
             "extractor_version": assessment.get("extractor_version", ""),
         },

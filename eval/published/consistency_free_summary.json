@@ -1,0 +1,54 @@
+{
+  "run": {
+    "created_at": "2026-09-18T02:02:15+00:00",
+    "labeled_dev": [
+      "eval_001",
+      "eval_002",
+      "eval_003"
+    ]
+  },
+  "layer1_pages": {
+    "eval_001": {
+      "workbench_source": "cache",
+      "workbench_pages": 10,
+      "eval_pages": 10,
+      "pages_identical": true,
+      "chars": 18341
+    },
+    "eval_002": {
+      "workbench_source": "cache",
+      "workbench_pages": 1,
+      "eval_pages": 1,
+      "pages_identical": true,
+      "chars": 1649
+    },
+    "eval_003": {
+      "workbench_source": "cache",
+      "workbench_pages": 1,
+      "eval_pages": 1,
+      "pages_identical": true,
+      "chars": 1263
+    }
+  },
+  "layer2_mock": {
+    "eval_001": {
+      "workbench_matched": "management=scope_and_results, overseas=responsible, project_scale=quantified, quality_safety=two_plus",
+      "prior_matched": "management=scope_and_results, overseas=responsible, project_scale=quantified, quality_safety=two_plus",
+      "identical": true
+    },
+    "eval_002": {
+      "workbench_matched": "quality_safety=two_plus, relevant_domain=True",
+      "prior_matched": "quality_safety=two_plus, relevant_domain=True",
+      "identical": true
+    },
+    "eval_003": {
+      "workbench_matched": "english=usage, management=managed, project_scale=quantified",
+      "prior_matched": "english=usage, management=managed, project_scale=quantified",
+      "identical": true
+    }
+  },
+  "layer3_model": {},
+  "layer4_candidates": {
+    "generated": []
+  }
+}

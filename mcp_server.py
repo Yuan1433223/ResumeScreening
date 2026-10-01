@@ -150,4 +150,20 @@ def review_resume(document_id: str) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    import argparse
+
+    parser = argparse.ArgumentParser(description="简历筛选 MCP server")
+    parser.add_argument(
+        "--transport", choices=["stdio", "http"], default="stdio",
+        help="stdio=本地命令连接；http=StreamableHTTP，供客户端填 URL（默认端口 8018）")
+    parser.add_argument("--port", type=int, default=8018,
+                        help="http 传输监听端口（默认 8018）")
+    args = parser.parse_args()
+
+    if args.transport == "http":
+        print(f"MCP HTTP 服务启动：http://127.0.0.1:{args.port}/mcp "
+              f"（后端 API 依赖 {API_BASE}）", flush=True)
+        mcp.run(transport="streamable-http", host="127.0.0.1",
+                port=args.port, streamable_http_path="/mcp")
+    else:
+        mcp.run(transport="stdio")

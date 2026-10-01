@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230d9488'/%3E%3Ctext x='32' y='44' font-size='32' text-anchor='middle' fill='white' font-family='monospace' font-weight='bold'%3ER%3C/text%3E%3C/svg%3E">
+<title>ResumeScreening 架构师升级文档</title>
+<style>
+  :root {
+    --bg: #fafaf9;
+    --ink: #1c1917;
+    --ink-2: #44403c;
+    --ink-3: #78716c;
+    --line: #e7e5e4;
+    --card: #ffffff;
+    --teal: #0d9488;
+    --teal-bg: #f0fdfa;
+    --violet: #7c3aed;
+    --violet-bg: #f5f3ff;
+    --amber: #b45309;
+    --amber-bg: #fffbeb;
+    --red: #b91c1c;
+    --red-bg: #fef2f2;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 15px; line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 28px 80px; }
+
+  /* Hero */
+  .hero { border-bottom: 1px solid var(--line); padding-bottom: 28px; margin-bottom: 36px; }
+  .hero .eyebrow { font-family: var(--mono); font-size: 12px; color: var(--teal); letter-spacing: 0.08em; text-transform: uppercase; }
+  .hero h1 { font-size: 32px; font-weight: 800; margin: 8px 0 10px; letter-spacing: -0.02em; }
+  .hero p.lead { font-size: 16px; color: var(--ink-2); margin: 0 0 20px; max-width: 720px; }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .metric { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .metric .v { font-size: 22px; font-weight: 700; color: var(--ink); font-family: var(--mono); }
+  .metric .k { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+
+  /* Section */
+  section { margin-bottom: 48px; }
+  h2 { font-size: 22px; font-weight: 700; margin: 0 0 4px; display: flex; align-items: baseline; gap: 10px; }
+  h2 .num { font-family: var(--mono); font-size: 13px; color: var(--teal); font-weight: 500; }
+  .sec-sub { color: var(--ink-3); font-size: 14px; margin: 0 0 18px; }
+
+  /* Architecture diagram */
+  .arch { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 22px; overflow-x: auto; }
+  .arch svg { display: block; min-width: 760px; }
+
+  /* Cards */
+  .grid { display: grid; gap: 14px; }
+  .grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+  .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; }
+  .card h3 { font-size: 15px; font-weight: 700; margin: 0 0 8px; }
+  .card p, .card li { font-size: 14px; color: var(--ink-2); }
+  .card ul { margin: 6px 0 0; padding-left: 18px; }
+  .card li { margin-bottom: 4px; }
+  .tag { display: inline-block; font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 4px; margin-right: 6px; }
+  .tag.teal { background: var(--teal-bg); color: var(--teal); }
+  .tag.violet { background: var(--violet-bg); color: var(--violet); }
+  .tag.amber { background: var(--amber-bg); color: var(--amber); }
+  .tag.red { background: var(--red-bg); color: var(--red); }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 14px; vertical-align: top; }
+  th { background: #fafaf9; font-weight: 600; color: var(--ink-2); font-size: 13px; }
+  tr:last-child td { border-bottom: none; }
+  td code, p code, li code { font-family: var(--mono); font-size: 12.5px; background: #f5f5f4; padding: 1px 5px; border-radius: 3px; }
+
+  /* Timeline */
+  .tl { display: grid; grid-template-columns: 110px 28px 1fr; gap: 0 0; }
+  .tl .when { font-family: var(--mono); font-size: 12px; color: var(--ink-3); text-align: right; padding-right: 14px; padding-top: 4px; }
+  .tl .axis { position: relative; }
+  .tl .axis::before { content: ""; position: absolute; left: 9px; top: 4px; bottom: -8px; width: 2px; background: var(--line); }
+  .tl:last-child .axis::before { display: none; }
+  .tl .dot { position: absolute; left: 4px; top: 8px; width: 12px; height: 12px; border-radius: 50%; background: var(--teal); border: 2px solid #fff; box-shadow: 0 0 0 1px var(--teal); }
+  .tl .body { padding: 0 0 22px 16px; }
+  .tl .body h4 { margin: 0 0 4px; font-size: 15px; font-weight: 700; }
+  .tl .body p { margin: 0; font-size: 14px; color: var(--ink-2); }
+
+  /* Priority matrix */
+  .matrix { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--card); }
+  .matrix .cell { padding: 16px 18px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .matrix .cell:nth-child(2n) { border-right: none; }
+  .matrix .cell:nth-child(3), .matrix .cell:nth-child(4) { border-bottom: none; }
+  .matrix .cell h4 { margin: 0 0 8px; font-size: 13px; font-family: var(--mono); color: var(--ink-3); }
+  .matrix .cell.now h4 { color: var(--teal); }
+  .matrix .cell.next h4 { color: var(--violet); }
+  .matrix .cell.later h4 { color: var(--amber); }
+  .matrix .cell.skip h4 { color: var(--red); }
+
+  /* Callout */
+  .callout { background: var(--teal-bg); border-left: 3px solid var(--teal); padding: 12px 16px; border-radius: 0 6px 6px 0; margin: 14px 0; font-size: 14px; color: var(--ink-2); }
+  .callout.warn { background: var(--amber-bg); border-left-color: var(--amber); }
+  .callout b { color: var(--ink); }
+
+  @media (max-width: 760px) {
+    .metrics { grid-template-columns: repeat(2, 1fr); }
+    .grid.cols-2, .grid.cols-3 { grid-template-columns: 1fr; }
+    .matrix { grid-template-columns: 1fr; }
+    .matrix .cell { border-right: none !important; border-bottom: 1px solid var(--line) !important; }
+    .matrix .cell:last-child { border-bottom: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ========== HERO ========== -->
+  <div class="hero">
+    <div class="eyebrow">ARCHITECTURE UPGRADE DOC · 2026-09</div>
+    <h1>ResumeScreening：从 L2 工作流到 L3 智能体的架构师升级路线</h1>
+    <p class="lead">基于 LangGraph 的简历筛选系统。本文从源码现状出发，梳理可深挖的技术债、可升级的 agent 工程栈，以及从 Pi（earendil-works/pi）源码中可直接借鉴的工程技巧——目标是把这个项目做成能讲清 tradeoff 的开源作品集。</p>
+    <div class="metrics">
+      <div class="metric"><div class="v">8</div><div class="k">图节点（parse→report）</div></div>
+      <div class="metric"><div class="v">99</div><div class="k">测试全绿</div></div>
+      <div class="metric"><div class="v">0.73</div><div class="k">模型 F1（vs mock 0.36）</div></div>
+      <div class="metric"><div class="v">L2</div><div class="k">当前成熟度等级</div></div>
+    </div>
+  </div>
+
+  <!-- ========== 01 现状架构 ========== -->
+  <section>
+    <h2><span class="num">01</span>现状架构：一条串行的确定性流水线</h2>
+    <p class="sec-sub">已读过的源码：workflow.py / state.py / repository.py / scheduler.py / review.py / app/api.py / mcp_server.py</p>
+    <div class="arch">
+      <svg viewBox="0 0 1000 260" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace, monospace" font-size="12">
+        <!-- nodes -->
+        <g>
+          <rect x="10" y="90" width="100" height="46" rx="6" fill="#f0fdfa" stroke="#0d9488"/>
+          <text x="60" y="110" text-anchor="middle" fill="#065f46" font-weight="600">parse</text>
+          <text x="60" y="126" text-anchor="middle" fill="#0d9488">PDF/JPG→文本</text>
+
+          <rect x="140" y="90" width="100" height="46" rx="6" fill="#f0fdfa" stroke="#0d9488"/>
+          <text x="190" y="110" text-anchor="middle" fill="#065f46" font-weight="600">extract</text>
+          <text x="190" y="126" text-anchor="middle" fill="#0d9488">LLM 抽字段</text>
+
+          <rect x="270" y="90" width="100" height="46" rx="6" fill="#f0fdfa" stroke="#0d9488"/>
+          <text x="320" y="110" text-anchor="middle" fill="#065f46" font-weight="600">validate</text>
+          <text x="320" y="126" text-anchor="middle" fill="#0d9488">schema 校验</text>
+
+          <rect x="400" y="90" width="100" height="46" rx="6" fill="#f0fdfa" stroke="#0d9488"/>
+          <text x="450" y="110" text-anchor="middle" fill="#065f46" font-weight="600">screen</text>
+          <text x="450" y="126" text-anchor="middle" fill="#0d9488">规则初筛</text>
+
+          <rect x="530" y="90" width="100" height="46" rx="6" fill="#f0fdfa" stroke="#0d9488"/>
+          <text x="580" y="110" text-anchor="middle" fill="#065f46" font-weight="600">score</text>
+          <text x="580" y="126" text-anchor="middle" fill="#0d9488">8 维评分</text>
+
+          <rect x="660" y="70" width="110" height="66" rx="6" fill="#fffbeb" stroke="#b45309" stroke-dasharray="4 3"/>
+          <text x="715" y="92" text-anchor="middle" fill="#92400e" font-weight="600">review</text>
+          <text x="715" y="108" text-anchor="middle" fill="#b45309">interrupt</text>
+          <text x="715" y="124" text-anchor="middle" fill="#b45309">人工在环</text>
+
+          <rect x="800" y="90" width="90" height="46" rx="6" fill="#f0fdfa" stroke="#0d9488"/>
+          <text x="845" y="110" text-anchor="middle" fill="#065f46" font-weight="600">apply</text>
+          <text x="845" y="126" text-anchor="middle" fill="#0d9488">副作用</text>
+
+          <rect x="910" y="90" width="80" height="46" rx="6" fill="#f0fdfa" stroke="#0d9488"/>
+          <text x="950" y="110" text-anchor="middle" fill="#065f46" font-weight="600">report</text>
+          <text x="950" y="126" text-anchor="middle" fill="#0d9488">报告</text>
+        </g>
+        <!-- arrows -->
+        <g stroke="#78716c" stroke-width="1.5" fill="none" marker-end="url(#arr)">
+          <line x1="110" y1="113" x2="138" y2="113"/>
+          <line x1="240" y1="113" x2="268" y2="113"/>
+          <line x1="370" y1="113" x2="398" y2="113"/>
+          <line x1="500" y1="113" x2="528" y2="113"/>
+          <line x1="630" y1="113" x2="658" y2="113"/>
+          <line x1="770" y1="113" x2="798" y2="113"/>
+          <line x1="890" y1="113" x2="908" y2="113"/>
+        </g>
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#78716c"/>
+          </marker>
+        </defs>
+        <!-- side annotations -->
+        <g font-size="11" fill="#78716c">
+          <text x="60" y="165" text-anchor="middle">FastAPI :8017</text>
+          <text x="320" y="165" text-anchor="middle">SqliteSaver checkpoint</text>
+          <text x="580" y="165" text-anchor="middle">8 维评分</text>
+          <text x="715" y="165" text-anchor="middle">interrupt 人工在环</text>
+          <text x="845" y="165" text-anchor="middle">幂等键 + RLock</text>
+        </g>
+        <g font-size="11" fill="#0d9488" font-weight="600">
+          <text x="500" y="200" text-anchor="middle">现状：串行单链路 · 无并行 · 无 RAG · 无 tracing · 手写 CloudModelClient</text>
+        </g>
+      </svg>
+    </div>
+    <div class="callout">
+      <b>架构定位：</b>这是一条<b>规则优先、模型可选、一切副作用幂等+可恢复+可审计</b>的确定性流水线。工程健壮性 9/10，但智能自主度 3/10、多智能体并行 3/10——你把 LangGraph 当"可检查点的 cron"用了，没用上它 Pregel/BSP 超步并行的核心能力。
+    </div>
+  </section>
+
+  <!-- ========== 02 可深挖的点 ========== -->
+  <section>
+    <h2><span class="num">02</span>可深挖的点：源码里已经存在的技术债</h2>
+    <p class="sec-sub">这些不是"未来要做的新功能"，而是"现在代码里已经能看到、面试时会被追问"的点</p>
+    <div class="grid cols-2">
+      <div class="card">
+        <h3><span class="tag red">技术债</span>手写 CloudModelClient 重复造轮子</h3>
+        <ul>
+          <li>当前自己实现了 HTTP 调 DeepSeek、重试、超时、错误映射。</li>
+          <li>LangChain 生态已有 <code>BaseChatModel</code> 抽象 + <code>LiteLLM</code> 网关，换模型=换实例，图/状态/checkpoint 全不感知。</li>
+          <li><b>代价：</b>你现在每加一个模型 Provider 要改 client；用了 LangChain 后 <code>create_react_agent(model, tools)</code> 直接吃 ChatModel 实例。</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="tag amber">稳定性</span>temperature=0 仍不精确复现</h3>
+        <ul>
+          <li>跨运行 F1 从 0.67 波动到 0.88，7 份 dev 标注。</li>
+          <li>根因：LLM 输出非确定性（batching/采样/服务端版本漂移），不是你的 prompt 问题。</li>
+          <li><b>解法：</b>建 golden set + 回归 eval，每次改 prompt 跑一遍；记录每次运行的 model version + seed + temperature。</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="tag amber">业务</span>模型转人工率 71.4% 偏高</h3>
+        <ul>
+          <li>10 份里 7 份落到 needs_review，说明规则阈值和模型判断之间的"灰色地带"太大。</li>
+          <li>可以深挖：是模型置信度低？还是 8 维评分的权重不合理？还是岗位画像太粗？</li>
+          <li><b>方向：</b>加一个 Critic 子智能体对 score 做 reflection，或者 LLM-as-judge 对比规则和模型的分歧点。</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="tag teal">未用能力</span>LangGraph BSP 并行被浪费</h3>
+        <ul>
+          <li>当前 8 节点全串行，每个节点等上一个完成。</li>
+          <li>LangGraph 的 Pregel 引擎支持同一 super-step 多节点并行（<code>_loop.py</code> 82KB 核心）。</li>
+          <li><b>立即可用：</b>parse 后 extract/validate 可并行；score 阶段 8 个维度可并行打分再汇总。</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="tag red">可观测性</span>无 tracing / 无结构化日志</h3>
+        <ul>
+          <li>现在出问题只能翻 print 日志和 SQLite。</li>
+          <li>LangSmith / Langfuse 可以一键接入：每个节点的输入输出、token 消耗、耗时、错误率全链路可查。</li>
+          <li><b>作品集加分项：</b>README 里贴一张 LangSmith trace 截图，比说"我做了 observability"有力 10 倍。</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="tag amber">上下文</span>每次全量 prompt，无沉淀</h3>
+        <ul>
+          <li>岗位画像、历史筛选决策、候选人画像每次都从数据库现查现塞 prompt。</li>
+          <li>没有向量检索：相似历史简历、相似岗位 JD 没法语义召回。</li>
+          <li><b>方向：</b>岗位 JD 向量化 + 历史决策 embedding，screen 节点先 RAG 召回相似案例再打分。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+  <!-- ========== 03 升级路线 ========== -->
+  <section>
+    <h2><span class="num">03</span>升级路线：四阶段，纵深 > 横铺</h2>
+    <p class="sec-sub">不要为了凑齐技术栈硬塞 Fine-tune / Distillation 等业务无关项。每个阶段都要有可演示、可量化的产出</p>
+
+    <div class="tl">
+      <div class="when">PHASE 1</div>
+      <div class="axis"><div class="dot"></div></div>
+      <div class="body">
+        <h4>混合智能评估：模型建议 + 规则兜底 + Reflection</h4>
+        <p>把 score 节点拆成 <code>Extractor → Evaluator → Critic</code> 子图：模型打分后 Critic 做一次自检（"这个结论有简历证据吗？"），分歧超阈值才转人工。同时接入 LLM-as-judge，用另一个模型对评分做复核。<b>产出：</b>转人工率从 71% 降到 40% 以下，F1 稳在 0.8+。</p>
+      </div>
+    </div>
+
+    <div class="tl">
+      <div class="when">PHASE 2</div>
+      <div class="axis"><div class="dot"></div></div>
+      <div class="body">
+        <h4>记忆与检索：RAG + 向量库 + 长期记忆</h4>
+        <p>岗位 JD、历史筛选决策、候选人画像全部 embedding 入库（Chroma / PGVector）。screen 节点先召回 Top-K 相似历史案例，再让模型基于"类比对标"打分。checkpoint 里加上跨会话记忆：同一个候选人重复投递时，系统记得上次为什么被 hold。<b>产出：</b>语义搜索 demo + 跨简历召回准确率指标。</p>
+      </div>
+    </div>
+
+    <div class="tl">
+      <div class="when">PHASE 3</div>
+      <div class="axis"><div class="dot"></div></div>
+      <div class="body">
+        <h4>多智能体 + 对话式面试：用上 BSP 并行</h4>
+        <p>把 8 维评分拆成 8 个并行子 agent（学历/经验/技能/稳定性/…），LangGraph 在同一 super-step 并行跑，barrier 后汇总。再加一个 Interviewer 子智能体：对模糊简历主动追问，通过 interrupt 等候选人回复——这正好用上 LangGraph 的人机在环能力。<b>产出：</b>并行加速比 + 多智能体拓扑图。</p>
+      </div>
+    </div>
+
+    <div class="tl">
+      <div class="when">PHASE 4</div>
+      <div class="axis"><div class="dot"></div></div>
+      <div class="body">
+        <h4>开源工程化：Tracing / Docker / CI / 数据脱敏</h4>
+        <p>接 LangSmith 全链路 trace；Docker Compose 一键起；GitHub Actions 跑 99 项测试 + lint；真实简历数据脱敏后开源示例。README 贴架构图 + trace 截图 + 评测数字。<b>产出：</b>可直接发给面试官的开源仓库。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 04 Pi 可借鉴 ========== -->
+  <section>
+    <h2><span class="num">04</span>从 Pi 源码可借鉴的工程技巧</h2>
+    <p class="sec-sub">已读 Pi <code>agent-loop.ts</code> 全文 + <code>harness/</code> 目录。不引入代码（TS→Python 不划算），只借设计思想，且 LangGraph/LangChain 生态已有对应实现</p>
+
+    <div style="overflow-x:auto;">
+    <table>
+      <colgroup><col style="width:22%"><col style="width:38%"><col style="width:40%"></colgroup>
+      <thead><tr><th>Pi 源码机制</th><th>它解决什么问题</th><th>你在 LangGraph 里怎么落地</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>transformContext</code><br>+ <code>prepareNextTurn</code></td>
+          <td>每轮 LLM 调用前压缩上下文，防止 context window 爆掉。Pi 把这做成了 hook，不是硬编码。</td>
+          <td>在每个长节点开头加一个 <code>_compress_state()</code>：把历史 tool result 摘要成一句话，只保留最近 N 轮原文。这就是"Context Engineering"的代码化。</td>
+        </tr>
+        <tr>
+          <td><code>beforeToolCall</code> / <code>afterToolCall</code> hooks</td>
+          <td>工具执行前后可拦截、可修改结果、可 block。Pi 用它做权限检查和结果脱敏。</td>
+          <td>用 LangChain 的 <code>@tool</code> 装饰器 + wrapper 实现：调外部 API 前校验参数，返回后脱敏 PII（手机号/身份证）。</td>
+        </tr>
+        <tr>
+          <td>事件系统<br>（<code>turn_end</code> / <code>tool_execution_*</code>）</td>
+          <td>Pi 把 agent 运行的每个节点都发出事件，UI/telemetry 订阅即可。</td>
+          <td>LangGraph 的 <code>stream_mode="updates"</code> + LangSmith 自动事件埋点。你不用自己写事件总线，接上就有。</td>
+        </tr>
+        <tr>
+          <td><code>steering</code> / <code>follow-up</code> 队列</td>
+          <td>用户在 agent 运行中插话，Pi 把消息排队，下一轮注入。</td>
+          <td>LangGraph 的 <code>interrupt()</code> + <code>Command(resume=...)</code> 已覆盖：review 节点暂停等人工回复，回复后继续。你已经在用了。</td>
+        </tr>
+        <tr>
+          <td><code>compaction/</code> 目录</td>
+          <td>Pi 把上下文压缩做成独立模块，可插拔（摘要式 / 截断式 / 选择性保留）。</td>
+          <td>Phase 2 做 RAG 时，compaction 策略 = 召回哪些历史片段塞进 context。Pi 的 compaction 接口设计可直接抄。</td>
+        </tr>
+        <tr>
+          <td><code>skills.ts</code>（13KB）</td>
+          <td>Pi 把工具按 skill 分组，可按需加载，不是一次性塞 50 个工具给模型。</td>
+          <td>用 LangGraph subgraph 实现：不同岗位类型加载不同工具子集（技术岗 vs 销售岗工具不同）。也对应 MCP 的 server 分组。</td>
+        </tr>
+        <tr>
+          <td><code>telemetry.ts</code>（18KB）</td>
+          <td>Pi 自己实现了 token 计数、耗时、错误上报。</td>
+          <td><b>不要自己写</b>。LangSmith / Langfuse / OpenTelemetry 现成，接 <code>langsmith</code> SDK 两行配置。</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <div class="callout warn">
+      <b>关键判断：</b>Pi 值得抄的是"hook 化的上下文管理 + 工具管道 + 事件驱动"这三个设计思想，<b>不是代码本身</b>。LangGraph/LangChain 生态里 90% 已有对应实现，你要做的是"知道它们存在 + 在正确节点用上"，而不是重写一遍。
+    </div>
+  </section>
+
+  <!-- ========== 05 LangChain 生态 ========== -->
+  <section>
+    <h2><span class="num">05</span>LangChain / LangGraph 生态可引入清单</h2>
+    <p class="sec-sub">按"替换你现在的什么"来列，不是按技术名词堆砌</p>
+    <div class="grid cols-3">
+      <div class="card">
+        <h3>替换手写 client</h3>
+        <ul>
+          <li><code>langchain-openai</code> / <code>langchain-deepseek</code> ChatModel</li>
+          <li><code>LiteLLM</code> 统一网关（100+ Provider 一个接口）</li>
+          <li><b>收益：</b>换模型改一行配置</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>加评估子智能体</h3>
+        <ul>
+          <li><code>create_react_agent(model, tools)</code></li>
+          <li>把 Critic / Interviewer 做成子图</li>
+          <li><b>收益：</b>评估逻辑可独立测试</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>加 RAG / 向量库</h3>
+        <ul>
+          <li><code>langchain-chroma</code> / <code>pgvector</code></li>
+          <li><code>RecursiveCharacterTextSplitter</code></li>
+          <li><code>OpenAIEmbeddings</code> / 本地 bge-m3</li>
+          <li><b>收益：</b>语义召回相似案例</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>加可观测性</h3>
+        <ul>
+          <li><code>langsmith</code> SDK（官方）</li>
+          <li>Langfuse（开源自托管）</li>
+          <li>OpenTelemetry 标准</li>
+          <li><b>收益：</b>trace 截图放 README</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>加 Eval</h3>
+        <ul>
+          <li>LangSmith Evaluations（dataset + annotate）</li>
+          <li>自建 golden set（你已有 7 份）</li>
+          <li>回归测试每次跑</li>
+          <li><b>收益：</b>改 prompt 不再靠玄学</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>加 MCP（可选）</h3>
+        <ul>
+          <li>把 ATS / 岗位库 / 简历源做成 MCP server</li>
+          <li>LangGraph 原生支持 MCP client</li>
+          <li><b>收益：</b>工具可跨 agent 复用</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 06 优先级矩阵 ========== -->
+  <section>
+    <h2><span class="num">06</span>优先级矩阵：下一步先做什么</h2>
+    <p class="sec-sub">按"对作品集价值 × 实现成本"排。先做右上，最后考虑左下</p>
+    <div class="matrix">
+      <div class="cell now">
+        <h4>★ 现在就做 · 低成本高价值</h4>
+        <ul>
+          <li>接 LangSmith tracing（2 行配置）</li>
+          <li>用 LangChain ChatModel 替换手写 client</li>
+          <li>建 golden set + 回归 eval（已有 7 份标注）</li>
+          <li>把 score 节点的 8 维改成 BSP 并行</li>
+        </ul>
+      </div>
+      <div class="cell next">
+        <h4>下一步 · 中成本高价值</h4>
+        <ul>
+          <li>加 Critic 子智能体（reflection + LLM-as-judge）</li>
+          <li>Chroma 向量库 + 岗位 JD 语义召回</li>
+          <li>Docker Compose + GitHub Actions CI</li>
+        </ul>
+      </div>
+      <div class="cell later">
+        <h4>以后再说 · 高成本中价值</h4>
+        <ul>
+          <li>对话式面试子智能体（interview 场景）</li>
+          <li>MCP server 封装 ATS 对接</li>
+          <li>多模态简历解析（扫描件 OCR 增强）</li>
+        </ul>
+      </div>
+      <div class="cell skip">
+        <h4>不建议做 · 对作品集无增益</h4>
+        <ul>
+          <li>Fine-tune / Distillation（简历场景用不上）</li>
+          <li>引入 Pi 代码（TS→Python 不划算）</li>
+          <li>自己写 agent loop（LangGraph 已够用）</li>
+          <li>自己写 telemetry（LangSmith 现成）</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== Footer ========== -->
+  <section>
+    <div class="callout">
+      <b>一句话总结：</b>你现在的项目是一条"工程严谨但智能度有限"的串行流水线。升级方向不是堆技术名词，而是<b>在已有骨架上注入三个东西</b>——子智能体（智能化）、RAG 记忆（上下文工程）、tracing+eval（可验证）。Pi 教你的是 hook 化的设计思想，LangGraph 给的是 BSP 并行 + checkpoint 的执行引擎，LangChain 给的是 ChatModel 抽象和工具生态。把这三层接对，就是一个能讲清 tradeoff 的优质作品集。
+    </div>
+  </section>
+
+</div>
+</body>
