@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .config import DB_PATH
+from .pii import decrypt_value, encrypt_value, encryption_enabled
 from .schemas import (
     Batch,
     Booking,
@@ -28,6 +29,10 @@ from .schemas import (
     Slot,
 )
 
+
+# Fernet 密文 token 固定以版本字节 0x80 开头，base64 urlsafe 编码后即 "gAAAA"。
+# 用于在无密钥进程里识别"库里其实是加密数据"，避免静默把密文当明文返回。
+_FERNET_TOKEN_PREFIX = "gAAAA"
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -64,6 +69,10 @@ class Repository:
                 mime TEXT NOT NULL DEFAULT '',
                 parse_status TEXT NOT NULL DEFAULT 'pending',
                 parser_version TEXT NOT NULL DEFAULT '',
+                pii_name TEXT NOT NULL DEFAULT '',
+                pii_phone TEXT NOT NULL DEFAULT '',
+                pii_email TEXT NOT NULL DEFAULT '',
+                org_id TEXT NOT NULL DEFAULT 'local',
                 created_at TEXT NOT NULL
             );
 
@@ -88,6 +97,7 @@ class Repository:
                 recommendation TEXT NOT NULL DEFAULT 'needs_review',
                 hard_summary TEXT NOT NULL DEFAULT 'unknown',
                 payload TEXT NOT NULL DEFAULT '{}',
+                org_id TEXT NOT NULL DEFAULT 'local',
                 created_at TEXT NOT NULL
             );
 
@@ -111,6 +121,7 @@ class Repository:
                 assessment_id TEXT,
                 status TEXT NOT NULL DEFAULT 'pending',
                 last_error TEXT,
+                org_id TEXT NOT NULL DEFAULT 'local',
                 started_at TEXT NOT NULL,
                 finished_at TEXT
             );
@@ -119,6 +130,7 @@ class Repository:
                 id TEXT PRIMARY KEY,
                 job_version TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'open',
+                org_id TEXT NOT NULL DEFAULT 'local',
                 created_at TEXT NOT NULL,
                 frozen_at TEXT
             );
@@ -169,6 +181,90 @@ class Repository:
             """
         )
         self._conn.commit()
+        self._ensure_pii_columns()
+        self._ensure_org_columns()
+
+    # P2 多租户预留：documents/assessments/runs/batches 四表已加 org_id 列
+    # （默认 'local'）。P2a 不实现多租户隔离——查询方法不加 org_id 过滤；
+    # P2 真正做多租户时，以 org_id 为所有查询的边界（WHERE org_id=?），
+    # 并在写入时取当前会话的 org_id。
+    _ORG_TABLES = ("documents", "assessments", "runs", "batches")
+
+    def _ensure_org_columns(self) -> None:
+        """旧库幂等迁移：四表缺 org_id 列则 ALTER TABLE 补列。
+
+        与 _ensure_pii_columns 同模式：CREATE TABLE IF NOT EXISTS 不给已存在的
+        老表补新列，故用 PRAGMA table_info 探测后逐表 ALTER（已存在则跳过）。
+        DEFAULT 'local' 与建表语句一致，老行回填 'local'。P2a 不做租户隔离。
+        """
+        for table in self._ORG_TABLES:
+            existing = {
+                r["name"]
+                for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if "org_id" not in existing:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN org_id TEXT NOT NULL DEFAULT 'local'"
+                )
+        self._conn.commit()
+
+    def _ensure_pii_columns(self) -> None:
+        """旧库幂等迁移：documents 缺 pii_* 列则 ALTER TABLE 补列。
+
+        CREATE TABLE IF NOT EXISTS 不会给已存在的老表补新列，故用 PRAGMA table_info
+        探测后逐列 ALTER（已存在则跳过）。DEFAULT '' 与建表语句一致，老行回填空串。
+        """
+        existing = {
+            r["name"] for r in self._conn.execute("PRAGMA table_info(documents)").fetchall()
+        }
+        for col in ("pii_name", "pii_phone", "pii_email"):
+            if col not in existing:
+                self._conn.execute(
+                    f"ALTER TABLE documents ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"
+                )
+        self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # PII 字段（透明加解密：写加密 / 读解密；只守护 documents.pii_* 三列）
+    # ------------------------------------------------------------------
+    def set_document_pii(self, document_id: str, name: str = "",
+                         phone: str = "", email: str = "") -> None:
+        """写入 documents.pii_* 三列（入库前由 encrypt_value 加密）。
+
+        解析节点调用；失败由调用方兜底，不阻断主流程。
+        """
+        with self._conn:
+            self._conn.execute(
+                "UPDATE documents SET pii_name=?, pii_phone=?, pii_email=? WHERE id=?",
+                (encrypt_value(name), encrypt_value(phone), encrypt_value(email),
+                 document_id),
+            )
+
+    def _decode_doc(self, row: sqlite3.Row) -> Dict[str, Any]:
+        """行 → dict，并对 pii_* 三列透明解密（解密失败显式抛错）。"""
+        d = dict(row)
+        for k in ("pii_name", "pii_phone", "pii_email"):
+            v = d.get(k)
+            if v:
+                d[k] = self._decode_pii_field(k, v)
+        return d
+
+    @staticmethod
+    def _decode_pii_field(key: str, value: str) -> str:
+        """单值解密；无密钥却读到 Fernet 密文特征 → 显式 RuntimeError，绝不静默。
+
+        根因：pii.decrypt_value 在无 key 时会把密文原样当明文返回，导致无密钥进程
+        读到加密库时静默降级（pii 全空/乱码，用户无法区分"没数据"与"没密钥"）。
+        这里在 Repository 读层拦截：值带 gAAAA 前缀而当前未配置 PII_ENCRYPT_KEY，
+        直接抛 RuntimeError，信息明确提示配置密钥后重跑。明文库（无密文值）不受影响。
+        """
+        if not encryption_enabled() and value.startswith(_FERNET_TOKEN_PREFIX):
+            raise RuntimeError(
+                f"PII 字段 {key} 为加密存储，但当前进程未配置 PII_ENCRYPT_KEY"
+                f"（数据为加密模式，请配置 PII_ENCRYPT_KEY 后重跑）"
+            )
+        return decrypt_value(value)
+
 
     # ------------------------------------------------------------------
     # Documents / Pages / Assessments
@@ -189,13 +285,13 @@ class Repository:
         row = self._conn.execute(
             "SELECT * FROM documents WHERE sha256=?", (sha256,)
         ).fetchone()
-        return dict(row) if row else None
+        return self._decode_doc(row) if row else None
 
     def get_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
         row = self._conn.execute(
             "SELECT * FROM documents WHERE id=?", (doc_id,)
         ).fetchone()
-        return dict(row) if row else None
+        return self._decode_doc(row) if row else None
 
     def save_pages(self, document_id: str, pages: List[Any]) -> None:
         with self._conn:
@@ -600,6 +696,17 @@ class Repository:
     # ------------------------------------------------------------------
     # 本地清理（DEVELOPMENT_SPEC.md §12）：按 document_id 删除
     # ------------------------------------------------------------------
+    def list_documents_older_than(self, cutoff_iso: str) -> List[Dict[str, Any]]:
+        """保留期清理：列出 created_at 早于 cutoff_iso 的文档（pii 列已解密）。
+
+        created_at 为 UTC ISO 字符串，字典序比较与时序一致。purge 子命令据此批量级联删除。
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM documents WHERE created_at < ? ORDER BY created_at",
+            (cutoff_iso,),
+        ).fetchall()
+        return [self._decode_doc(r) for r in rows]
+
     def delete_document(self, document_id: str) -> List[str]:
         """删除与文档关联的全部业务数据，返回关联 thread_id（供清理检查点）。
 

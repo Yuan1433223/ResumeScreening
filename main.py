@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -136,29 +137,44 @@ def cmd_export(args) -> int:
         return 1
 
     rows: List[Dict[str, Any]] = []
-    for run in repo.list_runs(batch_id=args.batch_id):
-        assessment = repo.get_assessment(run["assessment_id"]) if run["assessment_id"] else None
-        reviews = repo.get_reviews(run["assessment_id"]) if run["assessment_id"] else []
-        rows.append({
-            "run_id": run["id"],
-            "document_id": run["document_id"],
-            "status": run["status"],
-            "known_score": assessment["known_score"] if assessment else None,
-            "recommendation": assessment["recommendation"] if assessment else None,
-            "审批": reviews[-1].decision.value if reviews else "pending",
-        })
+    redact = bool(getattr(args, "redact", False))
+    from src.pii import mask_pii
+    try:
+        for run in repo.list_runs(batch_id=args.batch_id):
+            assessment = repo.get_assessment(run["assessment_id"]) if run["assessment_id"] else None
+            reviews = repo.get_reviews(run["assessment_id"]) if run["assessment_id"] else []
+            row: Dict[str, Any] = {
+                "run_id": run["id"],
+                "document_id": run["document_id"],
+                "status": run["status"],
+                "known_score": assessment["known_score"] if assessment else None,
+                "recommendation": assessment["recommendation"] if assessment else None,
+                "审批": reviews[-1].decision.value if reviews else "pending",
+            }
+            # --redact：仅在显式要求导出候选人联系方式时附带，且一律打码。
+            # 默认（无 --redact）行为与此前完全一致：不带任何 PII 字段。
+            if redact:
+                doc = repo.get_document(run["document_id"]) if run.get("document_id") else None
+                row["pii_name"] = mask_pii((doc or {}).get("pii_name", ""))
+                row["pii_phone"] = mask_pii((doc or {}).get("pii_phone", ""))
+                row["pii_email"] = mask_pii((doc or {}).get("pii_email", ""))
+            rows.append(row)
 
-    # 批次内的排期轮与预约
-    rounds = repo._conn.execute(
-        "SELECT * FROM rounds WHERE batch_id=? ORDER BY round_no", (args.batch_id,)
-    ).fetchall()
-    bookings: List[Dict[str, Any]] = []
-    for r in rounds:
-        for b in repo.get_bookings(r["id"]):
-            bookings.append({
-                "round": r["round_no"], "candidate_id": b["candidate_id"],
-                "slot_id": b["slot_id"], "status": b["status"],
-            })
+        # 批次内的排期轮与预约
+        rounds = repo._conn.execute(
+            "SELECT * FROM rounds WHERE batch_id=? ORDER BY round_no", (args.batch_id,)
+        ).fetchall()
+        bookings: List[Dict[str, Any]] = []
+        for r in rounds:
+            for b in repo.get_bookings(r["id"]):
+                bookings.append({
+                    "round": r["round_no"], "candidate_id": b["candidate_id"],
+                    "slot_id": b["slot_id"], "status": b["status"],
+                })
+    except RuntimeError as e:
+        # 密文数据在无密钥进程里被读：不写任何半截文件，友好报错并退出非 0
+        print(f"导出失败：{e}。请配置 PII_ENCRYPT_KEY 后重跑本命令。", file=sys.stderr)
+        return 1
 
     out_dir = Path(args.dir) if args.dir else OUTPUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -172,10 +188,20 @@ def cmd_export(args) -> int:
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     md_path = base.with_suffix(".md")
-    md_lines = [f"# 批次 {args.batch_id}", "", "| 候选人 | 评分 | 机器建议 | 审批 | 状态 |",
-                "| --- | ---: | --- | --- | --- |"]
-    for r in rows:
-        md_lines.append(f"| {r['document_id']} | {r['known_score'] or '-'} | {r['recommendation'] or '-'} | {r['审批']} | {r['status']} |")
+    if redact:
+        md_lines = [f"# 批次 {args.batch_id}（已脱敏）", "",
+                    "| 候选人 | 姓名 | 手机 | 邮箱 | 评分 | 机器建议 | 审批 | 状态 |",
+                    "| --- | --- | --- | --- | ---: | --- | --- | --- |"]
+        for r in rows:
+            md_lines.append(
+                f"| {r['document_id']} | {r.get('pii_name') or '-'} | {r.get('pii_phone') or '-'} "
+                f"| {r.get('pii_email') or '-'} | {r['known_score'] or '-'} | {r['recommendation'] or '-'} "
+                f"| {r['审批']} | {r['status']} |")
+    else:
+        md_lines = [f"# 批次 {args.batch_id}", "", "| 候选人 | 评分 | 机器建议 | 审批 | 状态 |",
+                    "| --- | ---: | --- | --- | --- |"]
+        for r in rows:
+            md_lines.append(f"| {r['document_id']} | {r['known_score'] or '-'} | {r['recommendation'] or '-'} | {r['审批']} | {r['status']} |")
     if bookings:
         md_lines += ["", "## 排期", "", "| 轮次 | 候选人 | 时段 | 状态 |", "| --- | --- | --- | --- |"]
         for b in bookings:
@@ -188,10 +214,17 @@ def cmd_export(args) -> int:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "候选人"
-        ws.append(["run_id", "document_id", "状态", "评分", "机器建议", "审批"])
-        for r in rows:
-            ws.append([r["run_id"], r["document_id"], r["status"], r["known_score"],
-                       r["recommendation"], r["审批"]])
+        if redact:
+            ws.append(["run_id", "document_id", "姓名", "手机", "邮箱", "状态", "评分", "机器建议", "审批"])
+            for r in rows:
+                ws.append([r["run_id"], r["document_id"], r.get("pii_name", ""),
+                           r.get("pii_phone", ""), r.get("pii_email", ""), r["status"],
+                           r["known_score"], r["recommendation"], r["审批"]])
+        else:
+            ws.append(["run_id", "document_id", "状态", "评分", "机器建议", "审批"])
+            for r in rows:
+                ws.append([r["run_id"], r["document_id"], r["status"], r["known_score"],
+                           r["recommendation"], r["审批"]])
         if bookings:
             ws2 = wb.create_sheet("排期")
             ws2.append(["轮次", "候选人", "时段", "状态"])
@@ -234,6 +267,53 @@ def cmd_clean(args) -> int:
         "checkpoint_cleaned": not args.keep_checkpoints,
         "file_deleted": bool(args.delete_file),
     }, ensure_ascii=False, indent=2))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# purge（PII 保留期清理）：按 created_at 早于保留期批量级联删除
+# ---------------------------------------------------------------------------
+def cmd_purge(args) -> int:
+    repo = _load_repo()
+    # --days 优先；否则回退 config.PII_RETENTION_DAYS；<=0/空 = 不启用
+    days = args.days if args.days is not None else None
+    if days is None:
+        from src import config
+        days = config.PII_RETENTION_DAYS
+    if not days or days <= 0:
+        print("保留期未启用（days<=0）：用 --days N 指定，或设置 PII_RETENTION_DAYS。",
+              file=sys.stderr)
+        return 1
+
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    docs = repo.list_documents_older_than(cutoff)
+    doc_ids = [d["id"] for d in docs]
+    result: Dict[str, Any] = {
+        "dry_run": bool(args.dry_run),
+        "retention_days": days,
+        "cutoff": cutoff,
+        "matched": len(doc_ids),
+        "document_ids": doc_ids,
+    }
+    if args.dry_run:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    deleted: List[str] = []
+    for d in docs:
+        thread_ids = repo.delete_document(d["id"])
+        if not args.keep_checkpoints:
+            repo.delete_checkpoint_threads(thread_ids)
+        if args.delete_files and d.get("storage_path"):
+            fp = Path(d["storage_path"])
+            try:
+                if fp.exists():
+                    fp.unlink()
+            except OSError as e:
+                print(f"删除原文件失败 {fp}: {e}", file=sys.stderr)
+        deleted.append(d["id"])
+    result["deleted"] = deleted
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -310,10 +390,19 @@ def main():
     p = sub.add_parser("export", help="导出批次状态（JSON/Markdown/Excel）")
     p.add_argument("batch_id")
     p.add_argument("--dir", default=None)
+    p.add_argument("--redact", action="store_true",
+                   help="导出候选人联系方式并打码（姓名/手机/邮箱 mask）；不传则不带 PII 字段")
 
     p = sub.add_parser("clean", help="本地清理：按 document_id 删除（规格 §12）")
     p.add_argument("document_id")
     p.add_argument("--delete-file", action="store_true", help="同时删除原文件")
+    p.add_argument("--keep-checkpoints", action="store_true", help="保留 LangGraph 检查点")
+
+    p = sub.add_parser("purge", help="PII 保留期清理：按 created_at 早于保留期批量删除")
+    p.add_argument("--days", type=int, default=None,
+                   help="保留天数（默认读 PII_RETENTION_DAYS；<=0 视为不启用）")
+    p.add_argument("--dry-run", action="store_true", help="只列出匹配文档，不删除")
+    p.add_argument("--delete-files", action="store_true", help="同时删除 storage_path 原文件")
     p.add_argument("--keep-checkpoints", action="store_true", help="保留 LangGraph 检查点")
 
     p = sub.add_parser("graph", help="导出工作流图")
@@ -323,7 +412,7 @@ def main():
     handlers = {
         "analyze": cmd_analyze, "batch": cmd_batch, "review": cmd_review,
         "resume": cmd_resume, "schedule": cmd_schedule, "export": cmd_export,
-        "clean": cmd_clean, "graph": cmd_graph,
+        "clean": cmd_clean, "graph": cmd_graph, "purge": cmd_purge,
     }
     if args.command is None:
         # 兼容旧用法：--file / --batch / --graph 顶层参数

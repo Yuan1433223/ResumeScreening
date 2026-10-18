@@ -98,6 +98,16 @@ def node_parse(state: ResumeState) -> ResumeState:
         print(f"[parse] 完成 {_t.monotonic()-_t0:.0f}s pages={len(pages)} chars={sum(len(p.text) for p in pages)} status={status.value}")
         raw_text = "\n".join(p.text for p in pages)
         file_path = state["file_path"]
+        # PII 落库（尽力而为）：从解析正文提取姓名/手机/邮箱写入 documents.pii_*，
+        # 失败仅记日志、留空，绝不阻断主解析/评分流程。
+        try:
+            from .pii import extract_pii
+            pii = extract_pii(raw_text, file_path)
+            get_repository().set_document_pii(
+                document_id, name=pii["name"], phone=pii["phone"], email=pii["email"],
+            )
+        except Exception as _e:  # noqa: BLE001
+            print(f"[parse] PII 提取/落库失败（忽略）: {_e}")
         return {
             **state,
             "document_id": document_id,
