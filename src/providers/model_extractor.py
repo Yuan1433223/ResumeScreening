@@ -266,6 +266,90 @@ def _localize_quote(page: Page, quote: str) -> Optional[Evidence]:
     )
 
 
+# ---------------------------------------------------------------------------
+# 引文↔档位一致性校验（防 prompt-injection 越权）
+# ---------------------------------------------------------------------------
+# 背景：`_localize_quote` 只校验"引文是原文子串"，不校验"引文内容是否支撑模型所贴档位"。
+# 被简历内嵌指令诱导的模型，可把任意真实子串（如"本人在公司担任行政助理"）同时贴上全部
+# 顶级档位并伪造十年任职区间，端到端产出 hard_summary=pass + RECOMMEND。
+#
+# 对策（方案①，保守口径）：模型自报 supported 的事实，其"真实引文切片"必须出现该 kind
+# 的领域证据词；否则视为"引文不能支撑档位"，把事实从 SUPPORTED 降级为 UNKNOWN（证据保留、
+# 写 uncertainty_reason 转人工，但不再进入评分）。词表与规则抽取器同口径，尽量只挡"同一
+# 无关子串贴满档位"的明显越权，避免误伤正常抽取（温度=0 时正确引文本就含领域词）。
+_DOMAIN_VOCAB: Dict[str, List[str]] = {
+    "relevant_domain": [
+        "钢结构", "钢构", "mic", "模块化", "预制装配", "装配式", "箱式房", "箱房",
+        "工程总包", "总承包", "建筑工程", "工程公司", "建筑公司", "厂房", "工业建筑",
+        "大型项目",
+    ],
+    "steel_mic_experience": [
+        "钢结构", "钢构", "mic", "模块化", "预制装配", "装配式", "箱式房", "箱房",
+    ],
+    "steel_full_flow": [
+        "深化设计", "设计", "采购", "生产", "施工", "交付", "制造", "安装",
+    ],
+    "overseas": [
+        "海外", "国外", "境外", "国际", "跨国", "出口", "外派",
+        "abroad", "overseas", "international",
+    ],
+    "management": [
+        "管理", "带领", "领导", "主管", "经理", "团队", "统筹", "牵头", "负责人",
+        "分管", "负责",
+    ],
+    "quality_safety": [
+        "质量", "安全", "体系", "iso", "qc", "qa", "ehs", "质检", "安全生产",
+    ],
+    "english": [
+        "英语", "英文", "english", "cet", "ielts", "托福", "雅思",
+    ],
+    "mobility": [
+        "东莞", "出差", "驻场", "外派", "工作地点", "base", "接受", "愿意",
+    ],
+}
+
+# 项目规模：引文须出现"数字+单位"，与规则抽取器 SCALE_UNITS 同口径
+_SCALE_UNIT_RE = re.compile(
+    r"(?<!\d)\d[\d,，]*\.?\d*\s*(?:万|亿|平方米|㎡|m²|吨|t|人|项|个|栋|层)"
+)
+# 四位年份（任职年限证据）
+_YEAR_RE = re.compile(r"(?<!\d)(\d{4})(?!\d)")
+
+
+def _quote_supports_kind(kind: str, quote_text: str) -> bool:
+    """真实引文切片是否包含支撑该 kind 的领域证据词（保守：只挡明显越权贴档）。"""
+    if kind == "project_scale":
+        return bool(_SCALE_UNIT_RE.search(quote_text))
+    tokens = _DOMAIN_VOCAB.get(kind)
+    if not tokens:
+        # total_years / relevant_years 等无领域词表的维度不做语义强校验，避免误伤
+        return True
+    low = quote_text.lower()
+    return any(tok.lower() in low for tok in tokens)
+
+
+def _should_check_consistency(kind: str, value: Any, status: FactStatus) -> bool:
+    """仅当模型自报 supported、且该 kind 有可校验的领域证据词时才做一致性校验。"""
+    if status != FactStatus.SUPPORTED:
+        return False  # 模型自报 unknown/contradicted 的，尊重其判断，不覆盖
+    if kind == "relevant_domain":
+        return bool(value) is True  # 只校验"正向相关"；False 不加分无需校验
+    return kind in _DOMAIN_VOCAB or kind == "project_scale"
+
+
+def _employment_years_evidenced(me: "_ModelOutputEmployment", quote_text: str) -> bool:
+    """任职区间所声明的起止年份，必须在引文切片中可定位，否则视为伪造年限。"""
+    claimed = set()
+    for field in (me.start_month, me.end_month):
+        if field:
+            year = str(field).split("-")[0]
+            if year.isdigit():
+                claimed.add(year)
+    if not claimed:
+        return True  # 未声明区间年限，无从伪造，保持现状
+    return bool(claimed & set(_YEAR_RE.findall(quote_text)))
+
+
 class ModelExtractor:
     """模型抽取器：提示词 + 结构化解析 + 引用定位 + 重试/纠正/成本统计。
 
@@ -435,6 +519,18 @@ class ModelExtractor:
             except ValueError:
                 warnings.append(f"事实 {mf.kind} 状态非法（{mf.status}），按 unknown 处理")
                 status = FactStatus.UNKNOWN
+
+            # 引文↔档位一致性：模型自报 supported 时，真实引文切片必须含该领域证据词；
+            # 否则视为"引文不能支撑档位"（注入越权特征），降级 unknown 转人工（不进评分）。
+            uncertainty_reason: Optional[str] = None
+            if _should_check_consistency(mf.kind, mf.value, status):
+                if not _quote_supports_kind(mf.kind, ev.quote):
+                    warnings.append(
+                        f"引文未含【{mf.kind}】领域证据词，无法支撑档位 {mf.value}，"
+                        f"疑为越权贴档，降级转人工：{mf.quote[:40]}…"
+                    )
+                    status = FactStatus.UNKNOWN
+                    uncertainty_reason = "引文缺少该领域证据词，未能支撑所贴档位（疑似注入越权）"
             facts.append(Fact(
                 id=f"f_model_{uuid.uuid4().hex[:10]}",
                 document_id=document_id,
@@ -443,6 +539,7 @@ class ModelExtractor:
                 status=status,
                 evidences=[ev],
                 evidence_ids=[ev.id],
+                uncertainty_reason=uncertainty_reason,
             ))
         return facts, warnings
 
@@ -457,6 +554,14 @@ class ModelExtractor:
             if ev is None:
                 warnings.append(
                     f"任职经历引用定位失败：{me.quote[:40]}…；该段任职转人工"
+                )
+                continue
+            # 年限必须可在引文切片中定位：否则该区间是模型凭空贴的年限（注入越权），
+            # 不予采纳，转人工复核，避免凭伪造区间凑满年限硬条件。
+            if not _employment_years_evidenced(me, ev.quote):
+                warnings.append(
+                    f"任职区间 {me.start_month}~{me.end_month} 的年限未在引文"
+                    f"中出现，疑为伪造年限，该段任职转人工：{me.quote[:40]}…"
                 )
                 continue
             employments.append(Employment(
