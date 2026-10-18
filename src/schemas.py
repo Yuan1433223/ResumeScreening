@@ -72,6 +72,8 @@ class Document(BaseModel):
     mime: str
     parse_status: ParseStatus = ParseStatus.PENDING
     parser_version: str = ""
+    # P2 多租户预留：数据归属 org；P2a 恒为 "local"，查询不按 org_id 隔离。
+    org_id: str = "local"
 
 
 class Page(BaseModel):
@@ -206,6 +208,7 @@ class Assessment(BaseModel):
     missing_items: List[str] = Field(default_factory=list)
     recommendation: Recommendation = Recommendation.NEEDS_REVIEW
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    org_id: str = "local"  # P2 多租户预留；P2a 不做隔离
 
 
 class ReviewDecision(str, Enum):
@@ -235,6 +238,7 @@ class Batch(BaseModel):
     status: str = "open"                 # open / frozen / scheduled
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     frozen_at: Optional[datetime] = None
+    org_id: str = "local"                 # P2 多租户预留；P2a 不做隔离
 
 
 class Slot(BaseModel):
