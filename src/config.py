@@ -8,12 +8,15 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from .schemas import JobProfile, ModelConfig
+
+logger = logging.getLogger(__name__)
 
 # 读取项目根 .env（密钥等不入版本控制；未安装/缺失时静默跳过）
 load_dotenv()
@@ -190,3 +193,35 @@ MODEL_CONFIG = ModelConfig(
     cost_per_1k_input_cents=float(os.environ.get("MODEL_COST_PER_1K_INPUT_CENTS", "0")),
     cost_per_1k_output_cents=float(os.environ.get("MODEL_COST_PER_1K_OUTPUT_CENTS", "0")),
 )
+
+# ---------------------------------------------------------------------------
+# PII 处理（字段级加密 / 保留期清理）
+# - PII_ENCRYPT_KEY：Fernet 对称密钥（base64 urlsafe 32 字节）。未配置 → 明文模式，
+#   导入即显式警告（绝不静默）。生成：
+#     python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# - PII_RETENTION_DAYS：简历文档保留天数，早于该期限的由 `python main.py purge` 清理；
+#   0 或空 = 不启用自动保留期（purge 仍可显式 --days 指定）。
+# ---------------------------------------------------------------------------
+PII_ENCRYPT_KEY = os.environ.get("PII_ENCRYPT_KEY", "").strip()
+if not PII_ENCRYPT_KEY:
+    logger.warning(
+        "PII 加密未启用（环境变量 PII_ENCRYPT_KEY 未配置）：documents.pii_* 三列将以明文落库。"
+        " 生成密钥：python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+    )
+
+PII_RETENTION_DAYS = int(os.environ.get("PII_RETENTION_DAYS", "90") or "0")
+
+# ---------------------------------------------------------------------------
+# 单用户认证（默认关闭）
+# - AUTH_ENABLED："1"/"true"/"yes" 开启；默认 "0" 关闭。关闭态所有业务路由不拦截，
+#   /api/auth/* 三端点仍存在但空操作（见 src/auth.py / app/api.py 契约）。
+# - AUTH_USERNAME / AUTH_PASSWORD：开启态必须同时配置（明文密码，运行时 pbkdf2 哈希
+#   比对，不落库）。开启但缺任一 → src.auth.ensure_auth_configured() 启动即抛错
+#   （fail-fast，绝不带空密码弱配置运行）。
+# - AUTH_SECRET_KEY：会话 Cookie 签名密钥。未配置时由 AUTH_PASSWORD 确定性派生
+#   （并告警）；生产环境应显式配置并做独立密钥管理。
+# ---------------------------------------------------------------------------
+AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "0").strip().lower() in ("1", "true", "yes")
+AUTH_USERNAME = os.environ.get("AUTH_USERNAME", "").strip()
+AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "")
+AUTH_SECRET_KEY = os.environ.get("AUTH_SECRET_KEY", "").strip()

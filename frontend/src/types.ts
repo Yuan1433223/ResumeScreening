@@ -113,3 +113,79 @@ export interface Scheduling {
   slots: Slot[]
   bookings: Booking[]
 }
+
+// ===== 看板 Dashboard =====
+export interface KpiSet {
+  total_documents: number
+  total_batches: number
+  recommended: number
+  needs_review: number
+  hold: number
+  approved: number
+  avg_score: number | null
+  review_rate: number
+}
+
+export interface ScoreBucket {
+  bucket: string
+  count: number
+}
+
+export interface LevelBucket {
+  level: number
+  count: number
+}
+
+export interface FunnelStage {
+  stage: string
+  label: string
+  count: number
+}
+
+export interface Dashboard {
+  kpis: KpiSet
+  score_distribution: {
+    total_score: ScoreBucket[]
+    dimensions: Record<string, LevelBucket[]>
+  }
+  funnel: FunnelStage[]
+}
+
+// ===== Trace 追踪 =====
+export interface TraceRow {
+  ts: string
+  seq: number
+  batch_id: string
+  task_id: string
+  extractor: 'mock' | 'model'
+  document_id: string
+  file_name: string
+  parse_status: string
+  facts: number
+  employments: number
+  stats: Record<string, unknown>
+  warnings: string[]
+  review_decision: string
+  known_score: number | null
+  recommendation: string
+  error?: string | null
+}
+
+export interface TraceList {
+  total: number
+  rows: TraceRow[]
+}
+
+// ===== 认证 Auth =====
+// POST /api/auth/login 成功响应
+export interface LoginResponse {
+  ok: boolean
+  username: string
+}
+
+// GET /api/auth/me 响应（未认证也返回 200，authenticated=false）
+export interface MeResponse {
+  authenticated: boolean
+  username: string | null
+  auth_enabled: boolean
+}

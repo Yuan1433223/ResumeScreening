@@ -13,11 +13,22 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
+from src.auth import (
+    COOKIE_NAME,
+    SESSION_MAX_AGE,
+    auth_enabled,
+    create_session,
+    ensure_auth_configured,
+    get_current_user,
+    read_session,
+    verify_password,
+)
 from src.batch import list_resumes
+from src import config
 from src.config import JOB_PROFILE, JOB_TITLE, RESUME_DIR
 from src.evidence import validate_evidence
 from src.extraction import extract_facts
@@ -32,6 +43,9 @@ from src.scheduler import _list_rounds, close_round, create_round, run_external,
 from src.workflow import resume_run, run_single
 
 app = FastAPI(title="ResumeScreening Agent API", version="0.1.0")
+# 单用户认证 fail-fast：AUTH_ENABLED=1 但缺 AUTH_USERNAME/AUTH_PASSWORD 时
+# 导入即抛错（不带着空密码弱配置起服务）。关闭态此调用为空操作。
+ensure_auth_configured()
 
 
 class BatchRequest(BaseModel):
@@ -44,6 +58,11 @@ class ApproveRequest(BaseModel):
     reason: str = ""
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 def _repo():
     return get_repository()
 
@@ -54,6 +73,53 @@ def _repo():
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# 单用户认证（契约冻结，前端已按此实现；开关 AUTH_ENABLED，默认关闭）
+# - 关闭态：三端点存在但空操作，业务路由不拦截。
+# - 开启态：login 校验凭据并 Set-Cookie 会话；logout 清 cookie；me 返回当前状态。
+# - /api/auth/* 本身始终公开（不挂 get_current_user），/api/health 也始终公开。
+# ---------------------------------------------------------------------------
+@app.post("/api/auth/login")
+def auth_login(req: LoginRequest, response: Response) -> dict:
+    # 关闭态：不校验凭据，直接返回空操作成功（前端据此不跳登录页）。
+    if not auth_enabled():
+        return {"ok": True, "auth_enabled": False}
+    if req.username == config.AUTH_USERNAME and verify_password(
+        req.password, config.AUTH_PASSWORD
+    ):
+        response.set_cookie(
+            key=COOKIE_NAME,
+            value=create_session(req.username),
+            max_age=SESSION_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
+        return {"ok": True, "username": req.username}
+    raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response) -> dict:
+    # 关闭态也照清一遍（幂等），契约恒为 200 {"ok": true}。
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request) -> dict:
+    if not auth_enabled():
+        return {"authenticated": True, "username": None, "auth_enabled": False}
+    token = request.cookies.get(COOKIE_NAME, "")
+    username = read_session(token) if token else None
+    # 开启态未认证也返回 200，仅 authenticated=false（前端据此决定跳登录页）。
+    return {
+        "authenticated": bool(username),
+        "username": username,
+        "auth_enabled": True,
+    }
 
 
 # ---------------------------------------------------------------------------

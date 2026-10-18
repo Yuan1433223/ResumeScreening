@@ -23,5 +23,11 @@ httpx==0.28.1
 python-multipart==0.0.20
 # 传递依赖由 pip 自动解析；以上为直接使用项。
 
+# PII 字段级加密（src/pii.py；Fernet 对称加密）
+cryptography==49.0.0
+
+# 单用户认证（src/auth.py；会话 Cookie 签名，无服务端会话存储）
+itsdangerous==2.2.0
+
 # T7 MCP 服务（mcp_server.py；mcp 2.x MCPServer API）
 mcp==2.2.0
