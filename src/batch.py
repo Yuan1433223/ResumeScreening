@@ -9,8 +9,12 @@ from .config import RESUME_DIR, OUTPUT_DIR, JOB_TITLE
 
 
 def list_resumes(resume_dir: Path = RESUME_DIR) -> List[Path]:
-    """列出所有简历文件"""
-    exts = {".pdf", ".jpg", ".jpeg", ".png", ".bmp"}
+    """列出所有简历文件。
+
+    T13：放开 .docx（parser 已支持 python-docx）；与 /api/upload 的
+    ALLOWED_UPLOAD_EXTS 保持一致，否则上传的 docx 会既列不出也扫不进批次。
+    """
+    exts = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".docx"}
     files = []
     for p in resume_dir.iterdir():
         if p.is_file() and p.suffix.lower() in exts:

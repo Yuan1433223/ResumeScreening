@@ -7,8 +7,10 @@
 """
 from __future__ import annotations
 
+import io
 import json
 import threading
+import zipfile
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -46,6 +48,61 @@ app = FastAPI(title="ResumeScreening Agent API", version="0.1.0")
 # 单用户认证 fail-fast：AUTH_ENABLED=1 但缺 AUTH_USERNAME/AUTH_PASSWORD 时
 # 导入即抛错（不带着空密码弱配置起服务）。关闭态此调用为空操作。
 ensure_auth_configured()
+
+
+# ---------------------------------------------------------------------------
+# T13 上传加固：允许后缀 / 大小上限 / MIME 魔数
+# - 大小上限：模块级常量，测试可 monkeypatch 调小（不引中间件，保持同步可读）。
+# - 魔数校验：读文件头字节判断真实类型，与扩展名不一致即拒（防伪装扩展名上传
+#   可执行/恶意文件绕过前端过滤）；校验失败/超限一律不落盘。
+# - DOCX 本质是 ZIP 容器（PK\x03\x04），再用标准库 zipfile 校验含 word/document.xml，
+#   比裸魔数更稳（防把 .zip 改名为 .docx 蒙混）。
+# P2 迁移要点：这些是"接入层输入校验"，与业务库无关；换 Postgres/对象存储时保留。
+# ---------------------------------------------------------------------------
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB
+ALLOWED_UPLOAD_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".docx"}
+
+# 各类型文件头魔数（至少校验前 8 字节；DOCX 用 zipfile 兜底）
+_MAGIC_PDF = b"%PDF-"                       # 25 50 44 46 2D
+_MAGIC_JPEG = b"\xff\xd8\xff"               # FF D8 FF
+_MAGIC_PNG = b"\x89PNG\r\n\x1a\n"          # 89 50 4E 47 0D 0A 1A 0A
+_MAGIC_BMP = b"BM"                          # 42 4D
+
+
+def _check_upload_magic(suffix: str, data: bytes) -> None:
+    """按扩展名校验文件头魔数；不匹配抛 HTTPException(400)。
+
+    - suffix 已小写化、已在 ALLOWED_UPLOAD_EXTS 内（调用方负责）。
+    - DOCX：先看 ZIP 魔数，再用 zipfile.is_zipfile + 检查 word/document.xml。
+    """
+    head = data[:8]
+    if suffix == ".pdf":
+        if not data.startswith(_MAGIC_PDF):
+            raise HTTPException(status_code=400, detail="文件内容不是合法 PDF（缺少 %PDF- 头）")
+    elif suffix in (".jpg", ".jpeg"):
+        if not head.startswith(_MAGIC_JPEG):
+            raise HTTPException(status_code=400, detail="文件内容不是合法 JPEG（缺少 FFD8FF 头）")
+    elif suffix == ".png":
+        if not data.startswith(_MAGIC_PNG):
+            raise HTTPException(status_code=400, detail="文件内容不是合法 PNG（缺少 89504E47 头）")
+    elif suffix == ".bmp":
+        if not head.startswith(_MAGIC_BMP):
+            raise HTTPException(status_code=400, detail="文件内容不是合法 BMP（缺少 BM 头）")
+    elif suffix == ".docx":
+        # docx 是 zip 容器：裸 PK 头之外，还须是合法 zip 且含 word/document.xml
+        if not head.startswith(b"PK\x03\x04"):
+            raise HTTPException(status_code=400, detail="文件内容不是合法 DOCX（缺少 ZIP/PK 头）")
+        try:
+            bio = io.BytesIO(data)
+            if not zipfile.is_zipfile(bio):
+                raise HTTPException(status_code=400, detail="DOCX 不是合法 ZIP 容器")
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                if "word/document.xml" not in zf.namelist():
+                    raise HTTPException(status_code=400, detail="DOCX 缺少 word/document.xml（不是合法 Word 文档）")
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"DOCX 解析失败: {e}") from e
 
 
 class BatchRequest(BaseModel):
@@ -467,17 +524,59 @@ def list_resume_files() -> dict:
     return {"total": len(files), "files": files}
 
 
-@app.post("/api/upload")
+@app.post("/api/upload", dependencies=[Depends(get_current_user)])
 async def upload_resume(file: UploadFile = File(...)) -> dict:
+    """上传简历到 RESUME_DIR（T13 加固：后缀白名单 + 大小上限 + MIME 魔数校验）。
+
+    校验顺序：后缀 → 读字节 → 空文件 → 大小上限 → 魔数（含 DOCX zip 检查）。
+    任一失败直接抛错、不落盘；全部通过才写盘。返回形状保持
+    {"file_name": ..., "saved": ...}（前端依赖，勿改）。
+    """
     name = Path(file.filename or "resume.pdf").name
-    if Path(name).suffix.lower() not in {".pdf", ".jpg", ".jpeg", ".png", ".bmp"}:
-        raise HTTPException(status_code=400, detail="仅支持 pdf/jpg/png/bmp")
+    suffix = Path(name).suffix.lower()
+    if suffix not in ALLOWED_UPLOAD_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"仅支持 {', '.join(sorted(ALLOWED_UPLOAD_EXTS))} 后缀",
+        )
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="空文件")
+    # 大小上限：超限不落盘。用 413 Payload Too Large，detail 带实际大小与上限。
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件大小 {len(data)} 字节超过上限 {MAX_UPLOAD_BYTES} 字节（20MB）",
+        )
+    # MIME 魔数：与扩展名不一致即拒（防伪装扩展名）；DOCX 额外校验 zip 容器
+    _check_upload_magic(suffix, data)
+    # PII 提示（仅提示不阻断）：对上传字节（latin-1 解码，PDF 文本流多为明文 ASCII）
+    # 扫手机号/邮箱，命中则在返回体 pii_warnings 打码列出。无命中返回空数组。
+    pii_warnings = _scan_upload_pii(name, data)
     dest = Path(RESUME_DIR) / name
     dest.write_bytes(data)
-    return {"file_name": name, "saved": str(dest)}
+    return {"file_name": name, "saved": str(dest), "pii_warnings": pii_warnings}
+
+
+def _scan_upload_pii(file_name: str, data: bytes) -> List[str]:
+    """上传时粗扫 PII：返回提示文案列表（打码），不阻断上传。
+
+    合成 PDF 的 Tj 文本流为未压缩 ASCII，故直接对字节 latin-1 解码即可命中；
+    真实压缩 PDF/DOCX 内的文本可能扫不到（属已知局限，后续接解析器可增强）。
+    """
+    try:
+        from src.pii import extract_pii, mask_pii
+        text = data.decode("latin-1", errors="ignore")
+        found = extract_pii(text, file_name)
+        warns: List[str] = []
+        if found.get("phone"):
+            warns.append(f"检测到手机号 {mask_pii(found['phone'])}，请确认已获得候选人授权")
+        if found.get("email"):
+            warns.append(f"检测到邮箱 {mask_pii(found['email'])}，请确认已获得候选人授权")
+        return warns
+    except Exception as e:  # noqa: BLE001 提示失败绝不阻断上传
+        print(f"[upload] PII 扫描失败（忽略）: {e}")
+        return []
 
 
 # ---------------------------------------------------------------------------

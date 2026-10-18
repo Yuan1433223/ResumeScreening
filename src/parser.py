@@ -196,6 +196,46 @@ def extract_pages_from_image(path: Path) -> Tuple[List[Page], List[str]]:
         return [], ["ocr_failed", str(e)]
 
 
+def extract_pages_from_docx(path: Path) -> Tuple[List[Page], List[str]]:
+    """用 python-docx 解析 Word 简历为单页文本（正文段落 + 表格单元格文本）。
+
+    - 过滤空段落；表格单元格文本一并抽取（简历常用表格排版）。
+    - DOCX 无真实分页概念，合并为第 1 页；extraction_method 标识 "python-docx"。
+    """
+    try:
+        from docx import Document
+    except Exception as e:  # 依赖缺失（理论上 requirements 已锁定 python-docx）
+        return [], [f"docx_import_failed:{e}"]
+    try:
+        doc = Document(str(path))
+    except Exception as e:
+        return [], [f"docx_parse_failed:{e}"]
+
+    lines: List[str] = []
+    for p in doc.paragraphs:
+        t = (p.text or "").strip()
+        if t:
+            lines.append(t)
+    # 表格排版简历：单元格文本也作为正文
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                t = (cell.text or "").strip()
+                if t:
+                    lines.append(t)
+
+    text = "\n".join(lines)
+    page = Page(
+        document_id="",
+        page_number=1,
+        text=text,
+        text_hash=_text_hash(text),
+        extraction_method="python-docx",
+        quality_flags=_page_flags(text),
+    )
+    return [page], []
+
+
 def extract_pages(path: Path) -> Tuple[List[Page], List[str]]:
     """根据扩展名解析为分页文本，返回 (pages, 文件级质量标记)。"""
     suffix = path.suffix.lower()
@@ -203,6 +243,8 @@ def extract_pages(path: Path) -> Tuple[List[Page], List[str]]:
         return extract_pages_from_pdf(path)
     if suffix in (".jpg", ".jpeg", ".png", ".bmp"):
         return extract_pages_from_image(path)
+    if suffix == ".docx":
+        return extract_pages_from_docx(path)
     return [], [f"unsupported_suffix:{suffix}"]
 
 
