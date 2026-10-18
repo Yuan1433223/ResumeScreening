@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import threading
+import time
 import zipfile
 import uuid
 from pathlib import Path
@@ -42,6 +43,7 @@ from src.repository import get_repository
 from src.review import submit_review
 from src.schemas import Page, SchedulingRound
 from src.scheduler import _list_rounds, close_round, create_round, run_external, schedule_round
+from src.task_store import get_task_store
 from src.workflow import resume_run, run_single
 
 app = FastAPI(title="ResumeScreening Agent API", version="0.1.0")
@@ -181,40 +183,45 @@ def auth_me(request: Request) -> dict:
 
 # ---------------------------------------------------------------------------
 # 批次：提交（后台任务）/ 查询
+# T10：任务状态从进程内内存 dict 落 SQLite（src/task_store）。
+# - 原 _BATCH_TASKS/_TASKS_LOCK 已删除，读写统一走 get_task_store()；
+#   线程安全由 SqliteTaskStore 内部 RLock 负责，本层不再加锁。
+# - 任务行保留不清理：SSE 完成事件与历史查询都靠它，进程重启后仍可恢复。
+# - 轮询接口 GET /api/batches/tasks/{task_id} 的响应形状保持不变（前端依赖）。
 # ---------------------------------------------------------------------------
-_BATCH_TASKS: Dict[str, Dict[str, Any]] = {}
-_TASKS_LOCK = threading.Lock()
-
-
 def _task_snapshot(task: Dict[str, Any]) -> dict:
-    with _TASKS_LOCK:
-        return {
-            "task_id": task["task_id"],
-            "batch_id": task["batch_id"],
-            "extractor": task["extractor"],
-            "status": task["status"],
-            "total": task["total"],
-            "done": task["done"],
-            "current_file": task.get("current_file", ""),
-            "rows": list(task["rows"]),
-            "error": task["error"],
-        }
+    """任务行 → 前端消费的快照 dict（字段与旧内存版完全一致）。"""
+    return {
+        "task_id": task["task_id"],
+        "batch_id": task["batch_id"],
+        "extractor": task["extractor"],
+        "status": task["status"],
+        "total": task["total"],
+        "done": task["done"],
+        "current_file": task.get("current_file", ""),
+        "rows": list(task["rows"]),
+        "error": task["error"],
+    }
 
 
 def _batch_worker(task: Dict[str, Any], files: List[Path]) -> None:
-    """后台线程串行跑批次；单份失败不阻断；进度逐步写入任务快照。
+    """后台线程串行跑批次；单份失败不阻断；进度逐步写入 TaskStore。
 
     线程身份 = {batch_id}__{file_name}：每次批次运行独立线程，避免复用
     旧文档线程的 END/中断检查点（T2 的"线程=文档"语义服务于 CLI 重放；
     工作台换抽取器重跑需要全新分析）。
+
+    T10：进度/rows 全部 store.update 落库（store 内部自带锁）；worker 不再
+    持有共享可变 dict，也就不需要在本层包 _TASKS_LOCK。
     """
+    store = get_task_store()
+    task_id = task["task_id"]
     batch_id = task["batch_id"]
     extractor = task["extractor"]
     repo = _repo()
     for fp in files:
         try:
-            with _TASKS_LOCK:
-                task["current_file"] = fp.name
+            store.update(task_id, current_file=fp.name)
             report = run_single(
                 str(fp),
                 JOB_TITLE,
@@ -227,7 +234,7 @@ def _batch_worker(task: Dict[str, Any], files: List[Path]) -> None:
                 if report.get("assessment_id") else []
             record_trace({
                 "batch_id": batch_id,
-                "task_id": task["task_id"],
+                "task_id": task_id,
                 "extractor": extractor,
                 "document_id": report.get("document_id", ""),
                 "file_name": report.get("文件名", fp.name),
@@ -244,21 +251,20 @@ def _batch_worker(task: Dict[str, Any], files: List[Path]) -> None:
             print(f"[api] 批次 {batch_id} 处理失败 {fp.name}: {e}")
             record_trace({
                 "batch_id": batch_id,
-                "task_id": task["task_id"],
+                "task_id": task_id,
                 "extractor": extractor,
                 "document_id": "",
                 "file_name": fp.name,
                 "error": f"批次处理失败: {e}",
             })
-        with _TASKS_LOCK:
-            task["done"] += 1
-            task["rows"] = [_row_from_run(r) for r in repo.list_runs(batch_id=batch_id)]
-    with _TASKS_LOCK:
-        task["current_file"] = ""
-        task["status"] = "done"
+        # 已完成份数 + 最新行快照（rows 事实来源是 runs 表，这里只是给前端的视图）
+        cur = store.get(task_id) or {}
+        rows = [_row_from_run(r) for r in repo.list_runs(batch_id=batch_id)]
+        store.update(task_id, done=cur.get("done", 0) + 1, rows=rows)
+    store.update(task_id, current_file="", status="done")
 
 
-@app.post("/api/batches")
+@app.post("/api/batches", dependencies=[Depends(get_current_user)])
 def create_batch(req: BatchRequest) -> dict:
     if req.extractor not in ("mock", "model"):
         raise HTTPException(status_code=400, detail="extractor 须为 mock / model")
@@ -281,19 +287,74 @@ def create_batch(req: BatchRequest) -> dict:
         "rows": [],
         "error": "",
     }
-    with _TASKS_LOCK:
-        _BATCH_TASKS[task_id] = task
+    # T10：落库后再起线程（P2 Redis 化时此处改走 store.enqueue）
+    get_task_store().create(task)
     threading.Thread(target=_batch_worker, args=(task, files), daemon=True).start()
     return _task_snapshot(task)
 
 
-@app.get("/api/batches/tasks/{task_id}")
+@app.get("/api/batches/tasks/{task_id}", dependencies=[Depends(get_current_user)])
 def get_batch_task(task_id: str) -> dict:
-    with _TASKS_LOCK:
-        task = _BATCH_TASKS.get(task_id)
+    task = get_task_store().get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
     return _task_snapshot(task)
+
+
+@app.get("/api/batches/tasks/{task_id}/events", dependencies=[Depends(get_current_user)])
+def batch_task_events(task_id: str) -> StreamingResponse:
+    """T10 SSE 推送端点（前端替代轮询用；轮询接口保留兼容）。
+
+    协议固定（前端按此实现，勿改）：
+    - 连接建立即发 event: connected，data = {"task_id": "..."}
+    - 进度变化发 event: progress，data = 与 GET /api/batches/tasks/{task_id}
+      完全相同的快照 JSON
+    - 任务结束（status != running）发 event: done，data = 最终快照后关闭
+    - 任务不存在/查询失败发 event: error，data = {"detail": "..."} 后关闭
+    - 每 15s 发一行 ": ping" 心跳（SSE 注释行，前端忽略）
+
+    实现：同步 generator，约 500ms 间隔轮询 TaskStore，与上次快照 JSON 比较，
+    有变化才推 progress。不引第三方库（不用 sse-starlette）。
+    """
+    def gen():
+        store = get_task_store()
+        task = store.get(task_id)
+        if task is None:
+            yield (
+                "event: error\n"
+                f'data: {json.dumps({"detail": f"任务不存在: {task_id}"})}\n\n'
+            )
+            return
+        yield (
+            "event: connected\n"
+            f'data: {json.dumps({"task_id": task_id})}\n\n'
+        )
+        last_payload: Optional[str] = None
+        last_ping = time.monotonic()
+        while True:
+            cur = store.get(task_id)
+            if cur is None:
+                # 任务被中途删除：按错误事件收尾
+                yield (
+                    "event: error\n"
+                    f'data: {json.dumps({"detail": f"任务在执行中被删除: {task_id}"})}\n\n'
+                )
+                return
+            snap = _task_snapshot(cur)
+            payload = json.dumps(snap, ensure_ascii=False)
+            if payload != last_payload:
+                yield f"event: progress\ndata: {payload}\n\n"
+                last_payload = payload
+            if cur["status"] != "running":
+                yield f"event: done\ndata: {payload}\n\n"
+                return
+            now = time.monotonic()
+            if now - last_ping >= 15:
+                yield ": ping\n\n"
+                last_ping = now
+            time.sleep(0.5)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @app.get("/api/traces")

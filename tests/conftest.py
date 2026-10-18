@@ -22,16 +22,18 @@ def _isolated_repository(monkeypatch):
 
     from src import config
     import src.repository as repo_mod
+    import src.task_store as task_store_mod
     import src.workflow as wf
 
     # 逐模块 patch 导入时复制的路径常量
-    for mod in (config, repo_mod, wf):
+    for mod in (config, repo_mod, wf, task_store_mod):
         monkeypatch.setattr(mod, "DB_PATH", str(tmp_db))
     for mod in (config, wf):
         monkeypatch.setattr(mod, "CHECKPOINT_DB_PATH", str(ckpt_db))
 
     # 重置进程内单例 / 编译缓存（指向旧路径的连接全部丢弃）
     repo_mod._default_repo = None
+    task_store_mod._default_store = None
     wf._checkpointer_cache = None
 
     from src.repository import Repository

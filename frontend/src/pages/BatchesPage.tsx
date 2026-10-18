@@ -25,14 +25,129 @@ export default function BatchesPage() {
   const [error, setError] = useState('')
   const [uploadMsg, setUploadMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [doneMsg, setDoneMsg] = useState('')
+  const [sseLive, setSseLive] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const pollRef = useRef<number | null>(null)
+  const sseRef = useRef<EventSource | null>(null)
 
   const loadResumes = () => {
     api.listResumes().then(setResumes).catch((e: Error) => setError(e.message))
   }
 
-  // 刷新页面后恢复上次批次任务的轮询（任务存于后端内存表，服务重启则失效）
+  const stopPoll = () => {
+    if (pollRef.current != null) {
+      window.clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
+
+  const closeSse = () => {
+    if (sseRef.current) {
+      sseRef.current.onmessage = null
+      sseRef.current.onerror = null
+      sseRef.current.close()
+      sseRef.current = null
+    }
+    setSseLive(false)
+  }
+
+  // 任务收尾：停轮询/SSE、清本地缓存、提示完成
+  const finishTask = (t: BatchTask) => {
+    stopPoll()
+    closeSse()
+    window.localStorage.removeItem('batch_task_id')
+    setDoneMsg(`批次完成：${t.done}/${t.total} 份已处理。`)
+  }
+
+  const startPoll = (taskId: string) => {
+    closeSse()
+    stopPoll()
+    pollRef.current = window.setInterval(async () => {
+      try {
+        const cur = await api.getBatchTask(taskId)
+        setTask(cur)
+        if (cur.status !== 'running') {
+          finishTask(cur)
+        }
+      } catch (e) {
+        setError((e as Error).message)
+        stopPoll()
+        window.localStorage.removeItem('batch_task_id')
+      }
+    }, 2000)
+  }
+
+  // SSE 实时进度；不支持/连接失败时回退 2s 轮询
+  const startSse = (taskId: string) => {
+    closeSse()
+    stopPoll()
+    if (typeof EventSource === 'undefined') {
+      startPoll(taskId)
+      return
+    }
+    let es: EventSource
+    try {
+      es = new EventSource(api.taskEventsUrl(taskId))
+    } catch {
+      startPoll(taskId)
+      return
+    }
+    sseRef.current = es
+    setSseLive(true)
+
+    es.addEventListener('progress', (ev: MessageEvent) => {
+      try {
+        const t = JSON.parse(String(ev.data)) as BatchTask
+        setTask(t)
+      } catch {
+        /* 忽略损坏帧 */
+      }
+    })
+
+    es.addEventListener('done', (ev: MessageEvent) => {
+      let final: BatchTask | null = null
+      try {
+        final = JSON.parse(String(ev.data)) as BatchTask
+      } catch {
+        /* 无 snapshot 时回源拉一次 */
+      }
+      if (final) {
+        setTask(final)
+        finishTask(final)
+      } else {
+        api
+          .getBatchTask(taskId)
+          .then((cur) => {
+            setTask(cur)
+            finishTask(cur)
+          })
+          .catch(() => closeSse())
+      }
+    })
+
+    es.addEventListener('error', (ev: MessageEvent) => {
+      let detail = '任务进度流错误'
+      try {
+        const body = JSON.parse(String(ev.data)) as { detail?: string }
+        if (body.detail) detail = body.detail
+      } catch {
+        /* 非 JSON */
+      }
+      setError(detail)
+      closeSse()
+      startPoll(taskId)
+    })
+
+    // 连接级失败（服务不可达/被关闭）→ 回退轮询
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED || es.readyState === EventSource.CONNECTING) {
+        closeSse()
+        startPoll(taskId)
+      }
+    }
+  }
+
+  // 刷新页面后恢复上次批次任务（SSE 无历史，恢复统一走轮询）
   useEffect(() => {
     loadResumes()
     const saved = window.localStorage.getItem('batch_task_id')
@@ -46,35 +161,11 @@ export default function BatchesPage() {
         .catch(() => window.localStorage.removeItem('batch_task_id'))
     }
     return () => {
-      if (pollRef.current != null) window.clearInterval(pollRef.current)
+      stopPoll()
+      closeSse()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  const stopPoll = () => {
-    if (pollRef.current != null) {
-      window.clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-  }
-
-  const startPoll = (taskId: string) => {
-    stopPoll()
-    pollRef.current = window.setInterval(async () => {
-      try {
-        const cur = await api.getBatchTask(taskId)
-        setTask(cur)
-        if (cur.status !== 'running') {
-          stopPoll()
-          window.localStorage.removeItem('batch_task_id')
-          setDoneMsg(`批次完成：${cur.done}/${cur.total} 份已处理。`)
-        }
-      } catch (e) {
-        setError((e as Error).message)
-        stopPoll()
-        window.localStorage.removeItem('batch_task_id')
-      }
-    }, 2000)
-  }
 
   const runBatch = async () => {
     setRunning(true)
@@ -84,7 +175,7 @@ export default function BatchesPage() {
       const t = await api.createBatch(limit, extractor)
       setTask(t)
       window.localStorage.setItem('batch_task_id', t.task_id)
-      startPoll(t.task_id)
+      startSse(t.task_id)
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -176,6 +267,11 @@ export default function BatchesPage() {
         <div className="card">
           <div className="card-title">
             批次运行中 · {task.extractor === 'model' ? '大模型' : '规则'}抽取 · {task.done}/{task.total}
+            {sseLive && (
+              <span className="hint" style={{ fontWeight: 400, marginLeft: 8 }}>
+                <span className="dot ok" />实时流
+              </span>
+            )}
           </div>
           <div
             role="progressbar"
