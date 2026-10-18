@@ -11,8 +11,8 @@ import io
 import json
 import threading
 import time
-import zipfile
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -47,6 +47,7 @@ from src.task_store import get_task_store
 from src.workflow import resume_run, run_single
 
 app = FastAPI(title="ResumeScreening Agent API", version="0.1.0")
+
 # 单用户认证 fail-fast：AUTH_ENABLED=1 但缺 AUTH_USERNAME/AUTH_PASSWORD 时
 # 导入即抛错（不带着空密码弱配置起服务）。关闭态此调用为空操作。
 ensure_auth_configured()
@@ -357,10 +358,14 @@ def batch_task_events(task_id: str) -> StreamingResponse:
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
-@app.get("/api/traces")
-def list_traces(limit: int = 50, batch_id: str = "") -> dict:
-    """T6 可观测性：最近处理 trace（JSONL 落盘，前端不直接暴露）。"""
-    rows = read_traces(limit=min(limit, 200), batch_id=batch_id)
+@app.get("/api/traces", dependencies=[Depends(get_current_user)])
+def list_traces(limit: int = 50, batch_id: str = "", document_id: str = "") -> dict:
+    """T6 可观测性：最近处理 trace（JSONL 落盘，前端不直接暴露）。
+
+    T13 增强：新增 document_id query 参数，按候选人精确过滤；batch_id 兼容保留。
+    两个过滤器可同时传（AND）。返回形状 {"total": n, "rows": [...]} 不变。
+    """
+    rows = read_traces(limit=min(limit, 200), batch_id=batch_id, document_id=document_id)
     return {"total": len(rows), "rows": rows}
 def _row_from_run(run: Dict[str, Any]) -> dict:
     repo = _repo()
@@ -384,7 +389,7 @@ def _row_from_run(run: Dict[str, Any]) -> dict:
     }
 
 
-@app.get("/api/batches/{batch_id}")
+@app.get("/api/batches/{batch_id}", dependencies=[Depends(get_current_user)])
 def get_batch(batch_id: str) -> dict:
     rows = [_row_from_run(r) for r in _repo().list_runs(batch_id=batch_id)]
     if not rows:
@@ -449,7 +454,7 @@ def _ensure_pages(document_id: str) -> List[Dict[str, Any]]:
     return pages
 
 
-@app.get("/api/documents/{document_id}/file")
+@app.get("/api/documents/{document_id}/file", dependencies=[Depends(get_current_user)])
 def get_document_file(document_id: str) -> FileResponse:
     """返回原始简历文件（复核页直接呈现，替代不可读的 OCR 文本）。"""
     doc = _repo().get_document(document_id)
@@ -477,7 +482,7 @@ def get_document_file(document_id: str) -> FileResponse:
     )
 
 
-@app.get("/api/documents/{document_id}/review")
+@app.get("/api/documents/{document_id}/review", dependencies=[Depends(get_current_user)])
 def get_review_detail(document_id: str) -> dict:
     repo = _repo()
     doc = repo.get_document(document_id)
@@ -573,7 +578,7 @@ def get_review_detail(document_id: str) -> dict:
 # ---------------------------------------------------------------------------
 # 简历库：列表 / 上传
 # ---------------------------------------------------------------------------
-@app.get("/api/resumes")
+@app.get("/api/resumes", dependencies=[Depends(get_current_user)])
 def list_resume_files() -> dict:
     files = []
     for p in sorted(list_resumes(RESUME_DIR), key=lambda x: x.name):
@@ -641,6 +646,57 @@ def _scan_upload_pii(file_name: str, data: bytes) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# Dashboard 聚合概览（T13 新增）
+# ---------------------------------------------------------------------------
+# 响应契约（前端已按此实现，字段名/层级不可改）：
+#   kpis / score_distribution{total_score,dimensions} / funnel[6 段]
+# 本端点只做"组装"，所有 SQL 聚合下沉在 src/repository.py 的只读方法里
+# （P2 换 Postgres 只改 repository，端点与前端契约不动）。
+# 无数据时全部返回 0/null/空，不 404。
+@app.get("/api/dashboard", dependencies=[Depends(get_current_user)])
+def get_dashboard() -> dict:
+    repo = _repo()
+
+    # --- KPI ---
+    rec_counts = repo.count_assessments_by_recommendation()
+    total_assessments = repo.count_assessments_total()
+    needs_review = rec_counts.get("needs_review", 0)
+    review_rate = round(needs_review / total_assessments, 4) if total_assessments else 0
+    kpis = {
+        "total_documents": repo.count_documents(),
+        "total_batches": repo.count_batches(),
+        "recommended": rec_counts.get("recommend", 0),
+        "needs_review": needs_review,
+        "hold": rec_counts.get("hold", 0),
+        "approved": repo.count_approved_distinct(),
+        "avg_score": repo.avg_known_score_scored(),  # 无样本 None
+        "review_rate": review_rate,
+    }
+
+    # --- 分数分布 ---
+    score_distribution = {
+        "total_score": repo.score_bucket_counts(),
+        "dimensions": repo.dimension_score_distributions(),
+    }
+
+    # --- 漏斗（六段，顺序固定；上游 count >= 下游 count）---
+    funnel = [
+        {"stage": "uploaded", "label": "上传", "count": repo.count_documents()},
+        {"stage": "parsed", "label": "解析成功", "count": repo.count_documents_parsed()},
+        {"stage": "extracted", "label": "事实抽取", "count": repo.count_extracted_documents()},
+        {"stage": "hard_passed", "label": "硬条件通过", "count": repo.count_hard_passed()},
+        {"stage": "scored", "label": "完成评分", "count": repo.count_scored()},
+        {"stage": "approved", "label": "审批通过", "count": repo.count_approved_distinct()},
+    ]
+
+    return {
+        "kpis": kpis,
+        "score_distribution": score_distribution,
+        "funnel": funnel,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 排期：生成 / 查询（幂等）
 # ---------------------------------------------------------------------------
 def _scheduling_view(batch_id: str) -> dict:
@@ -686,7 +742,7 @@ def _scheduling_view(batch_id: str) -> dict:
     }
 
 
-@app.get("/api/scheduling")
+@app.get("/api/scheduling", dependencies=[Depends(get_current_user)])
 def get_scheduling() -> dict:
     batch_id = _repo().latest_batch_id()
     if not batch_id:
@@ -694,7 +750,7 @@ def get_scheduling() -> dict:
     return _scheduling_view(batch_id)
 
 
-@app.post("/api/scheduling/run")
+@app.post("/api/scheduling/run", dependencies=[Depends(get_current_user)])
 def run_scheduling() -> dict:
     repo = _repo()
     batch_id = repo.latest_batch_id()
@@ -718,7 +774,7 @@ def run_scheduling() -> dict:
 # ---------------------------------------------------------------------------
 # 审批：提交决策并恢复任务
 # ---------------------------------------------------------------------------
-@app.post("/api/documents/{document_id}/approve")
+@app.post("/api/documents/{document_id}/approve", dependencies=[Depends(get_current_user)])
 def approve_document(document_id: str, req: ApproveRequest) -> dict:
     repo = _repo()
     assessment = repo.get_assessment_by_document(document_id)

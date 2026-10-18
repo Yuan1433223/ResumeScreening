@@ -53,6 +53,15 @@ export interface ReviewPage {
   text: string
 }
 
+// 单个评估维度的得分结构（后端 assessment.dimensions 序列化形状）
+export interface DimScore {
+  score: number | null
+  max_score: number
+  status: string
+  level: string | null
+  matched_facts: string[]
+}
+
 export interface ReviewDetail {
   document_id: string
   file_name: string
@@ -70,7 +79,7 @@ export interface ReviewDetail {
   assessment: {
     job_version: string
     hard_results: Record<string, unknown>
-    dimensions: Record<string, unknown>
+    dimensions: Record<string, DimScore>
     known_score: number | null
     score_complete: boolean
     missing_items: string[]

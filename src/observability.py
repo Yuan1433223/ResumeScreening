@@ -38,8 +38,12 @@ def record_trace(entry: Dict[str, Any]) -> None:
             fh.write(json.dumps(line, ensure_ascii=False) + "\n")
 
 
-def read_traces(limit: int = 50, batch_id: str = "") -> List[Dict[str, Any]]:
-    """读取最近 limit 条 trace（可只筛某个批次）；倒序（最新在前）。"""
+def read_traces(limit: int = 50, batch_id: str = "", document_id: str = "") -> List[Dict[str, Any]]:
+    """读取最近 limit 条 trace（可只筛某个批次 / 某份文档）；倒序（最新在前）。
+
+    document_id 与 batch_id 语义一致：非空则精确匹配 d.get("document_id")。
+    两个过滤器可同时使用（AND）。保持对旧调用方（只传 limit/batch_id）的兼容。
+    """
     if not TRACES_DIR.is_dir():
         return []
     rows: List[Dict[str, Any]] = []
@@ -50,6 +54,8 @@ def read_traces(limit: int = 50, batch_id: str = "") -> List[Dict[str, Any]]:
             except ValueError:
                 continue
             if batch_id and d.get("batch_id") != batch_id:
+                continue
+            if document_id and d.get("document_id") != document_id:
                 continue
             rows.append(d)
         if len(rows) >= limit:

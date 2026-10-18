@@ -1,4 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
+import {
+  PolarAngleAxis,
+  PolarGrid,
+  Radar,
+  RadarChart,
+  ResponsiveContainer,
+  Tooltip,
+} from 'recharts'
 import { api } from '../api'
 import type { ReviewDetail, ReviewFact } from '../types'
 
@@ -183,8 +191,43 @@ export default function ReviewPage({ documentId }: { documentId: string }) {
 
   const factGroups = useMemo(() => (data ? groupFacts(data.facts) : []), [data])
 
+  // 8 维评分条目（mock 批次下 dimensions 可能为空 dict → 空态占位）
+  const dimEntries = useMemo(() => {
+    if (!data?.assessment) return []
+    return Object.entries(data.assessment.dimensions).map(([key, dim]) => ({
+      key,
+      label: KIND_LABELS[key] ?? key,
+      dim,
+    }))
+  }, [data])
+
+  const radarData = useMemo(
+    () =>
+      dimEntries.map(({ key, label, dim }) => ({
+        key,
+        label,
+        score: dim.score ?? 0,
+        pct: dim.max_score > 0 ? Math.round(((dim.score ?? 0) / dim.max_score) * 100) : 0,
+      })),
+    [dimEntries]
+  )
+
   if (error) return <p className="error">{error}</p>
   if (!data) return <p className="hint">加载复核详情…</p>
+
+  // 点击维度：在 matched_facts 中找到第一个能命中 facts 的事实，联动高亮左栏原文
+  const linkDim = (key: string) => {
+    const dim = data.assessment?.dimensions[key]
+    if (!dim) return
+    for (const mf of dim.matched_facts ?? []) {
+      const hit = data.facts.find((f: ReviewFact) => f.kind === mf || fmtValue(f.value) === mf)
+      if (hit && hit.page_number != null && hit.quote) {
+        setView('text')
+        setActive({ page: hit.page_number, quote: hit.quote })
+        return
+      }
+    }
+  }
 
   const isPdf = data.ext === 'pdf'
   const fileUrl = api.fileUrl(documentId)
@@ -302,6 +345,59 @@ export default function ReviewPage({ documentId }: { documentId: string }) {
                   {data.assessment.known_score == null ? '—' : data.assessment.known_score} 分
                 </span>
               </div>
+              {dimEntries.length > 0 ? (
+                <div className="radar-wrap">
+                  <ResponsiveContainer width="100%" height={230}>
+                    <RadarChart
+                      data={radarData}
+                      outerRadius="70%"
+                      onClick={(state: unknown) => {
+                        const s = state as {
+                          activePayload?: { payload?: { key?: string } }[]
+                        }
+                        const key = s?.activePayload?.[0]?.payload?.key
+                        if (key) linkDim(key)
+                      }}
+                    >
+                      <PolarGrid stroke="#e3e3de" />
+                      <PolarAngleAxis dataKey="label" tick={{ fontSize: 11, fill: '#6d6d66' }} />
+                      <Radar
+                        dataKey="pct"
+                        stroke="#1f5f54"
+                        fill="#1f5f54"
+                        fillOpacity={0.25}
+                        isAnimationActive={false}
+                      />
+                      <Tooltip formatter={(v: unknown) => [`${v}%`, '得分率']} />
+                    </RadarChart>
+                  </ResponsiveContainer>
+                  <div className="hint" style={{ textAlign: 'center', marginTop: -6 }}>
+                    八维得分率（%），点击维度定位原文证据
+                  </div>
+                </div>
+              ) : (
+                <div className="hint" style={{ marginBottom: 10 }}>
+                  暂无维度评分
+                </div>
+              )}
+              {dimEntries.length > 0 && (
+                <div className="dim-list">
+                  {dimEntries.map(({ key, label, dim }) => (
+                    <div
+                      key={key}
+                      className="dim-row"
+                      onClick={() => linkDim(key)}
+                      title="点击定位证据"
+                    >
+                      <span className={`dot ${STATUS_DOT[dim.status] ?? 'muted'}`} />
+                      <span className="dim-name">{label}</span>
+                      <span className="dim-score num">
+                        {dim.score == null ? '—' : dim.score}/{dim.max_score}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
               {hardEntries.map(([k, v]) => (
                 <div key={k} className="kv">
                   <span className="k">{KIND_LABELS[k] ?? k}</span>

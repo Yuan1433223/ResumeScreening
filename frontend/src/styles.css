@@ -471,3 +471,211 @@ a.link {
 a.link:hover {
   text-decoration: underline;
 }
+
+/* ===== 看板 ===== */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+@media (max-width: 900px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.kpi-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.kpi-title {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.kpi-value {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.kpi-unit {
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: 2px;
+  font-weight: 400;
+}
+
+.dash-cols {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 18px;
+}
+
+@media (max-width: 900px) {
+  .dash-cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dash-empty {
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 32px 0;
+  text-align: center;
+}
+
+/* ===== 复核页雷达与维度列表 ===== */
+.radar-wrap {
+  margin: 4px 0 10px;
+}
+
+.dim-list {
+  border-top: 1px dashed #eee;
+  margin-top: 6px;
+  padding-top: 6px;
+}
+
+.dim-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.dim-row:hover {
+  background: #fafaf7;
+}
+
+.dim-name {
+  flex: 1;
+  font-size: 13px;
+}
+
+.dim-score {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* ===== 追踪页 ===== */
+.trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.trace-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+
+.trace-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  cursor: pointer;
+  flex-wrap: wrap;
+}
+
+.trace-file {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.trace-sub {
+  margin-top: 2px;
+}
+
+.trace-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: nowrap;
+}
+
+.trace-score {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.trace-detail {
+  margin-top: 10px;
+  border-top: 1px solid #f0f0eb;
+  padding-top: 8px;
+}
+
+.trace-warn {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+  font-size: 12.5px;
+  color: var(--warn);
+}
+
+.trace-pre {
+  background: #fafaf7;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow: auto;
+  max-height: 320px;
+  margin: 4px 0 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ===== 登录页（独立全屏，无侧栏） ===== */
+.login-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 340px;
+  margin: 0;
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.login-field input {
+  width: 100%;
+}
+
+.login-submit {
+  width: 100%;
+  margin-top: 4px;
+  padding: 9px 16px;
+}
+
+.logout-btn {
+  font: inherit;
+  font-size: 11.5px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}

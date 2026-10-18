@@ -29,10 +29,10 @@ from .schemas import (
     Slot,
 )
 
-
 # Fernet 密文 token 固定以版本字节 0x80 开头，base64 urlsafe 编码后即 "gAAAA"。
 # 用于在无密钥进程里识别"库里其实是加密数据"，避免静默把密文当明文返回。
 _FERNET_TOKEN_PREFIX = "gAAAA"
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -264,7 +264,6 @@ class Repository:
                 f"（数据为加密模式，请配置 PII_ENCRYPT_KEY 后重跑）"
             )
         return decrypt_value(value)
-
 
     # ------------------------------------------------------------------
     # Documents / Pages / Assessments
@@ -771,6 +770,187 @@ class Repository:
                 saver.delete_thread(tid)
             except Exception:
                 continue
+
+    # ------------------------------------------------------------------
+    # Dashboard 聚合（只读）——P2 换 Postgres 的唯一迁移边界
+    # ------------------------------------------------------------------
+    # 设计原则：
+    # - 所有聚合 SQL 集中在本类，api 端点只组装 dict、不直接写 SQL；
+    #   P2 换 Postgres 时只重写这一组方法（SQL 方言/窗口函数/JOIN 变化），
+    #   端点与前端契约不动。
+    # - 数据口径（与前端 /api/dashboard 契约一一对应，字段名不可改）：
+    #   * uploaded  = documents 行数（每份上传的简历一行）
+    #   * parsed    = 有 pages 行的 document_id 去重数。
+    #     注：documents.parse_status 列当前恒为 'pending'（upsert 只在入库时写一次，
+    #     解析节点不回写该列），故不用 parse_status!='pending'，改用 pages 表判定
+    #     "确实解析出了页文本"，更贴近真实漏斗。
+    #   * extracted = runs 行数（每次批处理一份简历落一个 run；同文档重跑复用
+    #     同一 thread_id 行，故约等于"进入抽取流水线的文档数"）。
+    #   * hard_passed = assessments.hard_summary='pass' 的行数。
+    #   * scored    = assessments.score_complete=1 的行数（用专用完成标记，
+    #     不用 known_score>0——后者会把"只确认了部分维度"的部分分也算作完成）。
+    #   * approved  = reviews.decision='approve' 的去重 assessment_id 数
+    #     （同一评估多次审批不重复计数）。
+    # - 注意：同一文档多批次会产生多条 assessment（按行计数），P1 即按行统计；
+    #   P2 可改为"每文档取最新 assessment"再聚合（见本方法注释末尾 TODO）。
+    # ------------------------------------------------------------------
+    def count_documents(self) -> int:
+        """funnel.uploaded / kpi.total_documents：documents 总行数。"""
+        row = self._conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()
+        return int(row["n"])
+
+    def count_documents_parsed(self) -> int:
+        """funnel.parsed：实际解析出页文本的文档数（pages 表去重 document_id）。
+
+        口径说明：documents.parse_status 列当前恒为 'pending'（workflow 只在
+        upsert_document 时写默认值，解析节点不回写），故以 pages 表是否有行判定。
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT document_id) AS n FROM pages"
+        ).fetchone()
+        return int(row["n"])
+
+    def count_batches(self) -> int:
+        """kpi.total_batches：batches 表行数。"""
+        row = self._conn.execute("SELECT COUNT(*) AS n FROM batches").fetchone()
+        return int(row["n"])
+
+    def count_extracted_documents(self) -> int:
+        """funnel.extracted：有 assessment 行的去重 document_id 数（文档维度）。
+
+        口径修正（冒烟二次反馈）：
+        - 初版 COUNT(*) FROM runs：按处理次数计，重跑翻倍，回跳；
+        - 二版 COUNT(DISTINCT document_id) FROM runs：run 在批处理开始即创建，
+          解析失败/中途退出的文档也有 run 行，导致 extracted=3 > parsed=2 仍回跳。
+        - 现版 COUNT(DISTINCT document_id) FROM assessments：assessment 只在
+          node_score 成功落库，即"完成事实抽取并产出评估"的文档；解析失败无
+          assessment，自然从漏斗退出，与 parsed（解析成功）严格后继、保证单调。
+        P1 把"抽取"与"评分"合并为一段；P2 若要拆两阶段，可再用 pages/runs 区分。
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT document_id) AS n FROM assessments"
+        ).fetchone()
+        return int(row["n"])
+
+    def count_assessments_by_recommendation(self) -> Dict[str, int]:
+        """kpi.recommended / needs_review / hold：按 recommendation 分组计数。
+
+        同一文档多批次会有多条 assessment，P1 按行计数；P2 可按 document_id
+        取 created_at 最新一条再 GROUP BY。
+        """
+        rows = self._conn.execute(
+            "SELECT recommendation, COUNT(*) AS n FROM assessments GROUP BY recommendation"
+        ).fetchall()
+        return {r["recommendation"]: int(r["n"]) for r in rows}
+
+    def count_assessments_total(self) -> int:
+        """kpi.review_rate 分母：assessments 总行数。"""
+        row = self._conn.execute("SELECT COUNT(*) AS n FROM assessments").fetchone()
+        return int(row["n"])
+
+    def count_hard_passed(self) -> int:
+        """funnel.hard_passed：assessments.hard_summary='pass' 行数。"""
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM assessments WHERE hard_summary='pass'"
+        ).fetchone()
+        return int(row["n"])
+
+    def count_scored(self) -> int:
+        """funnel.scored：assessments.score_complete=1 行数（完成评分）。"""
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM assessments WHERE score_complete=1"
+        ).fetchone()
+        return int(row["n"])
+
+    def count_approved_distinct(self) -> int:
+        """kpi.approved / funnel.approved：decision='approve' 的去重 assessment_id 数。
+
+        用 COUNT(DISTINCT assessment_id) 避免同一评估多次审批重复计数。
+        """
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT assessment_id) AS n FROM reviews WHERE decision='approve'"
+        ).fetchone()
+        return int(row["n"])
+
+    def avg_known_score_scored(self) -> Optional[float]:
+        """kpi.avg_score：score_complete=1 样本的 known_score 平均值；无样本返回 None。"""
+        row = self._conn.execute(
+            "SELECT AVG(known_score) AS a FROM assessments WHERE score_complete=1"
+        ).fetchone()
+        if row is None or row["a"] is None:
+            return None
+        return float(row["a"])
+
+    def score_bucket_counts(self) -> List[Dict[str, Any]]:
+        """score_distribution.total_score：score_complete=1 的 known_score 分桶计数。
+
+        桶边界（左闭右开，100 分进最后一桶）：
+        [0,20) [20,40) [40,60) [60,75) [75,90) [90,100]
+        返回与前端契约顺序一致的 6 个桶（无样本也补 0）。
+        """
+        rows = self._conn.execute(
+            "SELECT known_score FROM assessments WHERE score_complete=1"
+        ).fetchall()
+        buckets = [
+            ("0-20", 0, 20),
+            ("20-40", 20, 40),
+            ("40-60", 40, 60),
+            ("60-75", 60, 75),
+            ("75-90", 75, 90),
+            ("90-100", 90, 101),  # 100 分进最后一桶（上界开到 101）
+        ]
+        counts = {label: 0 for label, _, _ in buckets}
+        for r in rows:
+            s = r["known_score"]
+            for label, lo, hi in buckets:
+                if lo <= s < hi:
+                    counts[label] += 1
+                    break
+        return [{"bucket": label, "count": counts[label]} for label, _, _ in buckets]
+
+    def dimension_score_distributions(self) -> Dict[str, List[Dict[str, int]]]:
+        """score_distribution.dimensions：遍历 assessments.payload JSON 的 dimensions。
+
+        payload 是 JSON 列（save_assessment 写 assessment.model_dump(mode="json")），
+        结构形如 {"dimensions": {"steel_mic_experience": {"score": 30, "max_score": 30,
+        "status": "supported", ...}, ...}}。防御性 json.loads，坏 JSON 跳过。
+        每维按得分值（score，None 跳过）聚合计数：
+        {"<dim_key>": [{"level": <score>, "count": <n>}, ...]}，按 level 升序。
+        无任何数据返回空 dict。
+        """
+        rows = self._conn.execute(
+            "SELECT payload FROM assessments"
+        ).fetchall()
+        # dim_key -> Counter{level: count}
+        agg: Dict[str, Dict[int, int]] = {}
+        for r in rows:
+            raw = r["payload"] or "{}"
+            try:
+                parsed = json.loads(raw)
+            except (ValueError, TypeError):
+                continue  # 坏 JSON 跳过（防御）
+            if not isinstance(parsed, dict):
+                continue
+            dims = parsed.get("dimensions")
+            if not isinstance(dims, dict):
+                continue
+            for dim_key, dim_val in dims.items():
+                if not isinstance(dim_val, dict):
+                    continue
+                score = dim_val.get("score")
+                if score is None:
+                    continue  # 未提及维度不计入分布
+                try:
+                    level = int(score)
+                except (TypeError, ValueError):
+                    continue
+                agg.setdefault(dim_key, {})
+                agg[dim_key][level] = agg[dim_key].get(level, 0) + 1
+        return {
+            key: [{"level": lvl, "count": cnt}
+                  for lvl, cnt in sorted(levels.items())]
+            for key, levels in agg.items()
+        }
 
 
 _default_repo: Optional[Repository] = None
