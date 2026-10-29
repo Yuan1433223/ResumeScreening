@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from datetime import date
 
 from dotenv import load_dotenv
 
@@ -25,7 +26,7 @@ load_dotenv()
 # 路径：项目相对路径，不硬编码盘符
 # ---------------------------------------------------------------------------
 ROOT = Path(__file__).resolve().parent.parent
-RESUME_DIR = ROOT / "海外项目负责招聘简历"
+RESUME_DIR = Path(os.environ.get("RESUME_DIR", str(ROOT / "海外项目负责招聘简历")))
 OUTPUT_DIR = ROOT / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -42,7 +43,7 @@ CHECKPOINT_DB_PATH = Path(os.environ.get("RESUME_CHECKPOINT_PATH", str(DATA_DIR 
 JOB_ID = "overseas_mic"
 JOB_VERSION = "v1"
 JOB_TITLE = "海外项目负责人（钢结构/MiC方向）"
-ANALYSIS_DATE = "2026-09-14"  # 当前任职截止日期；随使用日期更新
+ANALYSIS_DATE = os.environ.get("ANALYSIS_DATE", date.today().isoformat())  # 可固定以复现历史口径
 
 # 硬条件（三态：pass/fail/unknown）
 HARD_RULES = {
