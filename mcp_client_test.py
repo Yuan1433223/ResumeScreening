@@ -5,7 +5,7 @@
   list_tools → create_batch(mock) → get_batch_task 轮询 → get_review → approve
   + read_resource + get_prompt
 
-用法：python mcp_client_test.py [--server F:\ResumeScreening\mcp_server.py]
+用法：python mcp_client_test.py [--server F:/ResumeScreening/mcp_server.py]
 （后端 8017 需在运行）
 """
 import argparse
@@ -83,7 +83,10 @@ async def main(server_cmd: str) -> None:
 
             ap = await session.call_tool(
                 "approve", {"document_id": doc_id,
-                            "decision": "approve", "reason": "MCP 连通性测试"})
+                            "decision": "approve", "reason": "MCP 连通性测试",
+                            "assessment_id": review["assessment"]["id"],
+                            "expected_version": review["assessment"]["job_version"],
+                            "request_id": f"mcp_{review['assessment']['id']}"})
             print(f"[call] approve → {json.loads(ap.content[0].text)}")
 
             # 6. resource 读取

@@ -251,7 +251,7 @@ def score_dimension(facts: Sequence[Fact], dim_name: str, dim_cfg: Dict) -> Dime
             max_score=max_score,
             status=FactStatus.CONTRADICTED,
             level="有反向事实，计 0 分",
-            matched_facts=[str(f.value) for f in contradicted],
+            matched_facts=[f.id for f in contradicted],
         )
 
     return DimensionScore(score=None, max_score=max_score, status=FactStatus.UNKNOWN)

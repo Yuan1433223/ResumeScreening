@@ -93,7 +93,7 @@ def node_parse(state: ResumeState) -> ResumeState:
         if cached is not None:
             pages, status, reason = cached, ParseStatus.PARSED, ""
         else:
-            pages, status, reason = parse_document(document_id, state["file_path"])
+            pages, status, reason = parse_document(document_id, state.get("source_path") or state["file_path"])
             get_repository().save_pages(document_id, pages)
         print(f"[parse] 完成 {_t.monotonic()-_t0:.0f}s pages={len(pages)} chars={sum(len(p.text) for p in pages)} status={status.value}")
         raw_text = "\n".join(p.text for p in pages)
@@ -217,33 +217,33 @@ def _evaluate_hard(facts, employments) -> Dict[str, str]:
 
 
 def node_score(state: ResumeState) -> ResumeState:
-    """评分节点：8 维评估；结果幂等落库（repository）。"""
-    if state.get("error"):
-        return state
+    """保存一次执行的完整分析快照；失败路径保留人工可处理的未知评估。"""
+    blocked = bool(state.get("error"))
     assessment = assess(
-        state.get("facts", []),
-        state.get("employments", []),
-        JOB_PROFILE,
+        [] if blocked else state.get("facts", []),
+        [] if blocked else state.get("employments", []), JOB_PROFILE,
         document_id=state.get("document_id", "doc"),
-        assessment_id=f"{state.get('document_id', 'doc')}_{JOB_VERSION}",
+        assessment_id=f"{state.get('run_id', state.get('document_id', 'doc'))}_{JOB_VERSION}",
         extractor_version=state.get("extractor_version", "synthetic"),
     )
-    # 评估结果落库（幂等：同 assessment id 覆盖为同一版本键）
+    assessment.snapshot_version = 1
+    assessment.analysis_date = JOB_PROFILE.analysis_date
+    assessment.scoring_available = not blocked
+    assessment.facts = state.get("facts", [])
+    assessment.employments = state.get("employments", [])
+    assessment.pages = state.get("pages", [])
+    assessment.warnings = list(state.get("extract_warnings", []))
+    assessment.stats = state.get("extract_stats", {})
+    if blocked:
+        assessment.warnings.append(str(state["error"]))
     repo = get_repository()
     repo.save_assessment(assessment)
-    # 关联 run
-    run_id = state.get("run_id")
-    if run_id:
-        repo.update_run(run_id, assessment_id=assessment.id)
-    return {
-        **state,
-        "assessment": assessment,
-        "assessment_id": assessment.id,
-        "known_score": assessment.known_score,
-        "score_complete": assessment.score_complete,
-        "missing_items": assessment.missing_items,
-        "recommendation": assessment.recommendation.value,
-    }
+    if state.get("run_id"):
+        repo.update_run(state["run_id"], assessment_id=assessment.id)
+    return {**state, "assessment": assessment, "assessment_id": assessment.id,
+            "known_score": None if blocked else assessment.known_score, "score_complete": assessment.score_complete,
+            "missing_items": assessment.missing_items,
+            "recommendation": assessment.recommendation.value}
 
 
 def node_review(state: ResumeState) -> ResumeState:
@@ -252,6 +252,8 @@ def node_review(state: ResumeState) -> ResumeState:
     审批流程（P2）：submit_review 先以 request_id 幂等入库，再 Command(resume=decision)
     恢复本节点；进程在两步之间退出时，resume_run 读取未消费审批继续执行。
     """
+    if not state.get("assessment"):
+        state = node_score(state)
     comments: List[str] = []
     parsed = state.get("parsed") or {}
     status = parsed.get("parse_status")
@@ -389,9 +391,14 @@ def _get_checkpointer() -> Any:
         if _checkpointer_cache is None:
             import sqlite3
             from langgraph.checkpoint.sqlite import SqliteSaver
+            from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+            import inspect
+            from . import schemas
 
             conn = sqlite3.connect(CHECKPOINT_DB_PATH, check_same_thread=False)
-            _checkpointer_cache = SqliteSaver(conn)
+            allowed = [(schemas.__name__, name) for name, value in vars(schemas).items()
+                       if inspect.isclass(value) and value.__module__ == schemas.__name__]
+            _checkpointer_cache = SqliteSaver(conn, serde=JsonPlusSerializer(allowed_msgpack_modules=allowed))
         return _checkpointer_cache
 
 
@@ -415,12 +422,12 @@ def build_resume_graph():
     workflow.set_entry_point("parse")
     workflow.add_conditional_edges("parse", route_after_parse, {
         "extract": "extract",
-        "review": "review",
+        "review": "score",
     })
     workflow.add_edge("extract", "validate")
     workflow.add_conditional_edges("validate", route_after_validate, {
         "screen": "screen",
-        "review": "review",
+        "review": "score",
     })
     workflow.add_edge("screen", "score")
     workflow.add_edge("score", "review")
@@ -448,30 +455,33 @@ def run_single(
     - facts/employments 参数仅供测试注入（跳过抽取）
     - extractor_version：mock / model（T5c：工作台批次可切换）
     """
-    doc_id = document_id or _doc_id(file_path)
-    tid = thread_id or doc_id
-    graph = build_resume_graph()
     repo = get_repository()
-
-    # P2 幂等：同 sha256 复用 Document；记录 run（稳定 thread_id）
-    sha = hashlib.sha256(Path(file_path).read_bytes()).hexdigest()
+    content = Path(file_path).read_bytes()
+    sha = hashlib.sha256(content).hexdigest()
     existing = repo.get_document_by_sha(sha)
-    if existing:
-        doc_id = existing["id"]
-        tid = thread_id or doc_id
-    repo.upsert_document(
-        doc_id, sha, str(file_path),
-        mime=Path(file_path).suffix.lower().lstrip(".") or "unknown",
-        parser_version="pdfplumber/rapidocr",
-    )
-    run_id = _new_run_id()
-    # 执行身份 = thread 身份：同 thread 重跑时复用既有 run 行（batch 归属更新为最新），
-    # 返回真实 run id 供后续 update_run 关联评估，避免"新生成 id 无对应行"的静默失效。
-    run_row = repo.create_run(run_id, tid, doc_id, batch_id=batch_id)
-    print(f"[run] {Path(file_path).name} 开始 run={run_row['id']} thread={tid} extractor={extractor_version}")
-
+    doc_id = existing["id"] if existing else (document_id or "doc_" + sha[:24])
+    # 内容身份与原始路径分离；原文件更新不改变历史复核内容。
+    source_dir = Path(repo.db_path).parent / "documents"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    source_path = source_dir / (sha + Path(file_path).suffix.lower())
+    if not source_path.exists():
+        temporary = source_path.with_name(source_path.name + '.' + uuid.uuid4().hex + '.tmp')
+        temporary.write_bytes(content)
+        temporary.replace(source_path)
+    repo.upsert_document(doc_id, sha, str(source_path),
+                         mime=Path(file_path).suffix.lower().lstrip("."),
+                         parser_version="pdfplumber/rapidocr", file_name=Path(file_path).name)
+    tid = f"{thread_id or batch_id or 'cli'}__{doc_id}__{JOB_VERSION}__{extractor_version}"
+    graph = build_resume_graph()
+    run_row = repo.create_run(_new_run_id(), tid, doc_id, batch_id=batch_id)
+    with _GRAPH_LOCK:
+        previous = graph.get_state({"configurable": {"thread_id": tid}})
+        if previous.values.get("assessment_id"):
+            return previous.values.get("final_report") or _report_from_state(previous.values)
     state: Dict[str, Any] = {
         "file_path": file_path,
+        "source_path": str(source_path),
+        "batch_id": batch_id,
         "job_title": job_title,
         "document_id": doc_id,
         "run_id": run_row["id"],

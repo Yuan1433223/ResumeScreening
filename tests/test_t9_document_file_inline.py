@@ -60,7 +60,6 @@ CV_TEXT = "Senior Project Manager, steel structure, 10+ years, English"
 def _fake_resume_dir(tmp_path, monkeypatch):
     (tmp_path / "cv_test.pdf").write_bytes(_minimal_pdf(CV_TEXT))
     monkeypatch.setattr(api_module, "RESUME_DIR", tmp_path)
-    api_module._REVIEW_EXTRACT_CACHE.clear()
     yield tmp_path
 
 

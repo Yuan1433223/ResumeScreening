@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from functools import wraps
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -24,6 +26,14 @@ from .providers.mock_notifier import MockNotifier, get_notifier
 TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
 ROUND_SLOT_COUNT = 4
 SLOT_MINUTES = 45
+_SCHEDULE_LOCK = threading.RLock()
+
+def _serialized(fn):
+    @wraps(fn)
+    def call(*args, **kwargs):
+        with _SCHEDULE_LOCK:
+            return fn(*args, **kwargs)
+    return call
 
 
 def _new_id(prefix: str) -> str:
@@ -90,6 +100,7 @@ def close_round(round_id: str, expected_job_version: str,
     )
 
 
+@_serialized
 def schedule_round(round_id: str,
                    availability: Optional[Dict[str, List[int]]] = None,
                    repo: Repository | None = None) -> List[Booking]:
@@ -116,7 +127,9 @@ def schedule_round(round_id: str,
     avail = availability or {}
 
     bookings: List[Booking] = []
-    slot_used: Dict[str, bool] = {s["id"]: False for s in slots}
+    occupied = {b["slot_id"] for b in repo.get_bookings(round_id)
+                if b["status"] == "confirmed" and b["slot_id"]}
+    slot_used: Dict[str, bool] = {s["id"]: s["id"] in occupied for s in slots}
 
     for cand in candidates:
         cand_id = cand["candidate_id"]
@@ -137,10 +150,11 @@ def schedule_round(round_id: str,
             idempotency_key=f"bk_{round_id}_{cand_id}",
         )
         created = repo.create_booking(booking)  # 幂等：同 round+candidate 复用
-        if created.id != booking.id:
-            # 已有预约：沿用其状态，不重复分配
+        if created.id != booking.id and created.status != BookingStatus.PENDING:
+            # 已完成的预约保持原样；中断留下的 pending 继续占位。
             bookings.append(created)
             continue
+        booking = created
         if chosen and repo.claim_slot(booking.id, chosen):
             slot_used[chosen] = True
             bookings.append(repo.get_booking_as_model(booking.id))
@@ -158,8 +172,7 @@ def _candidate_slots(cand_id: str, slots: List[Dict[str, Any]],
         return [s["id"] for s in slots]
     wanted = avail[cand_id]
     ordered = [s["id"] for i, s in enumerate(slots, start=1) if i in wanted]
-    rest = [s["id"] for i, s in enumerate(slots, start=1) if i not in wanted]
-    return ordered + rest
+    return ordered
 
 
 def _approved_candidates(batch_id: str, job_version: str,
@@ -191,86 +204,55 @@ def _rank_key(c: Dict[str, Any]) -> tuple:
             -c["management_score"], c["candidate_id"])
 
 
+@_serialized
 def run_external(booking: Booking, repo: Repository | None = None,
                  calendar: Optional[MockCalendar] = None,
-                 notifier: Optional[MockNotifier] = None) -> ExternalAction:
-    """对预约执行：建会（幂等）→ 成功后才通知（幂等）。
-
-    - MockCalendar.create_meeting(booking_id, idempotency_key) 返回稳定 provider_id
-    - 会议成功后 MockNotifier.send(meeting_id, idempotency_key)
-    - 通知失败只重试通知，不重复建会（外部动作表按 booking+type 唯一）
-    - calendar/notifier 可注入（测试故障模拟）
-    """
+                 notifier: Optional[MockNotifier] = None) -> Dict[str, Any]:
+    """沿用预约和动作幂等键，只执行尚未成功的动作。"""
     repo = repo or get_repository()
     calendar = calendar or get_calendar()
     notifier = notifier or get_notifier()
-
-    # 1) 建会
-    meeting_action = repo.create_external_action(ExternalAction(
-        id=_new_id("act"),
-        booking_id=booking.id,
-        type="meeting",
-        idempotency_key=f"meet_{booking.id}",
-        status="pending",
-    ))
-    if meeting_action.status.value != "succeeded":
-        ok, provider_id, err = calendar.create_meeting(booking.id, meeting_action.idempotency_key)
-        repo.update_action_status(
-            meeting_action.id,
-            status="succeeded" if ok else "failed",
-            provider_id=provider_id,
-            last_error=err,
-        )
-        meeting_action = repo.get_action(meeting_action.id)
-    if meeting_action["status"] != "succeeded":
-        return repo.get_action(meeting_action["id"])
-
-    # 2) 通知（会议成功后才允许）
-    notify_action = repo.create_external_action(ExternalAction(
-        id=_new_id("act"),
-        booking_id=booking.id,
-        type="notify",
-        idempotency_key=f"ntf_{booking.id}",
-        status="pending",
-    ))
-    if notify_action.status.value != "succeeded":
-        ok, provider_id, err = notifier.send(
-            meeting_action["provider_id"] or "",
-            notify_action.idempotency_key,
-        )
-        repo.update_action_status(
-            notify_action.id,
-            status="succeeded" if ok else "failed",
-            provider_id=provider_id,
-            last_error=err,
-        )
-        notify_action = repo.get_action(notify_action.id)
-    return repo.get_action(notify_action["id"])
+    if repo.get_booking(booking.id)['status'] != 'confirmed':
+        raise ValueError('只有已确认预约可以建会和通知')
+    for kind, prefix in [('meeting', 'meet'), ('notify', 'ntf')]:
+        action = repo.create_external_action(ExternalAction(
+            id=_new_id('act'), booking_id=booking.id, type=kind,
+            idempotency_key=f'{prefix}_{booking.id}', status='pending', attempt=0))
+        result = repo.get_action(action.id)
+        if result['status'] != 'succeeded':
+            result = retry_action(action.id, repo, calendar, notifier)
+        if result['status'] != 'succeeded':
+            return result
+    return result
 
 
+@_serialized
 def retry_action(action_id: str, repo: Repository | None = None,
                  calendar: Optional[MockCalendar] = None,
-                 notifier: Optional[MockNotifier] = None) -> ExternalAction:
-    """重试失败的外部动作（仅重试通知等，不重建会议）。"""
+                 notifier: Optional[MockNotifier] = None) -> Dict[str, Any]:
+    """成功动作直接返回；通知只在会议已成功时允许重试。"""
     repo = repo or get_repository()
     calendar = calendar or get_calendar()
     notifier = notifier or get_notifier()
     action = repo.get_action(action_id)
     if action is None:
-        raise ValueError(f"action 不存在: {action_id}")
-    booking = _get_booking(action["booking_id"], repo)
-    if action["type"] == "meeting":
-        # 建会失败重试：仍走同一幂等键
-        ok, provider_id, err = calendar.create_meeting(
-            booking.id, action["idempotency_key"])
+        raise ValueError(f'action 不存在: {action_id}')
+    if action['status'] == 'succeeded':
+        return action
+    booking = _get_booking(action['booking_id'], repo)
+    if booking.status != BookingStatus.CONFIRMED:
+        raise ValueError('预约未确认，不能执行外部动作')
+    if action['type'] == 'meeting':
+        ok, provider_id, err = calendar.create_meeting(booking.id, action['idempotency_key'])
+    elif action['type'] == 'notify':
+        meeting = repo.get_action_by_booking(booking.id, 'meeting')
+        if not meeting or meeting['status'] != 'succeeded':
+            raise ValueError('会议尚未创建，不能发送通知')
+        ok, provider_id, err = notifier.send(meeting['provider_id'], action['idempotency_key'])
     else:
-        meeting = repo.get_action_by_booking(booking.id, "meeting")
-        meeting_id = (meeting or {}).get("provider_id") or ""
-        ok, provider_id, err = notifier.send(meeting_id, action["idempotency_key"])
-    repo.update_action_status(
-        action_id, "succeeded" if ok else "failed",
-        provider_id=provider_id, last_error=err,
-    )
+        raise ValueError('未知外部动作类型')
+    repo.update_action_status(action_id, 'succeeded' if ok else 'failed',
+                              provider_id=provider_id, last_error=err)
     return repo.get_action(action_id)
 
 

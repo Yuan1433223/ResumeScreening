@@ -137,10 +137,11 @@ def step_restart_recover(repo, run_id: str, assessment_id: str, thread_id: str) 
     env = dict(os.environ)
     env["RESUME_DB_PATH"] = str(ROOT / "data" / "demo.db")
     env["RESUME_CHECKPOINT_PATH"] = str(ROOT / "data" / "demo.checkpoints.db")
+    env['PYTHONIOENCODING'] = 'utf-8'
     log(f"重启演示 | 新进程恢复 run={run_id}")
     p = subprocess.run(
         [sys.executable, "main.py", "resume", run_id],
-        cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8",
+        cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors='replace',
     )
     return {"resume_rc": p.returncode, "resume_stdout": p.stdout.strip()[:1500],
             "resume_stderr": p.stderr.strip()[-300:]}
@@ -168,7 +169,7 @@ def step_schedule(repo) -> Dict[str, Any]:
             str(p), facts=make_facts(doc_id), employments=[],
             batch_id=batch_id, document_id=doc_id, thread_id=f"t_{doc_id}",
         )
-        assessment = repo.get_assessment(f"{doc_id}_v1")
+        assessment = repo.get_assessment(report['assessment_id'])
         req_id = f"req_{i}"
         submit_review(assessment["id"], "v1", "approve", reason="演示批准", request_id=req_id)
         entry = {"name": name, "doc_id": doc_id, "score": report.get("综合评分")}

@@ -5,6 +5,7 @@ from typing import TypedDict, List, Dict, Any, Optional
 class ResumeState(TypedDict, total=False):
     # 输入
     file_path: str
+    source_path: str     # 按内容保存的不可变原文件
     file_name: str
     job_title: str
     document_id: str
@@ -34,7 +35,7 @@ class ResumeState(TypedDict, total=False):
     # 评分结果
     assessment: Any
     assessment_id: str   # P2：评估主键（关联审批/排期）
-    known_score: int
+    known_score: Optional[int]
     score_complete: bool
     missing_items: List[str]
     recommendation: str

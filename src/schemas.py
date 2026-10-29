@@ -200,6 +200,14 @@ class Assessment(BaseModel):
     job_version: str
     extractor_version: str = ""
     rubric_version: str = ""
+    snapshot_version: int = 0  # 0 = 历史记录未保存分析快照
+    analysis_date: str = ""
+    scoring_available: bool = True
+    facts: List[Fact] = Field(default_factory=list)
+    employments: List[Employment] = Field(default_factory=list)
+    pages: List[Page] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    stats: Dict[str, float] = Field(default_factory=dict)
     hard_results: Dict[str, HardResult] = Field(default_factory=dict)
     hard_summary: HardResult = HardResult.UNKNOWN
     dimensions: Dict[str, DimensionScore] = Field(default_factory=dict)
@@ -228,6 +236,7 @@ class Review(BaseModel):
     reviewer_id: str = "hr"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     request_id: str = ""                 # 幂等键：同一 request 重复提交返回同一结果
+    consumed: bool = False
 
 
 class Batch(BaseModel):

@@ -57,6 +57,9 @@ def read_traces(limit: int = 50, batch_id: str = "", document_id: str = "") -> L
                 continue
             if document_id and d.get("document_id") != document_id:
                 continue
+            for key, default in {'warnings': [], 'stats': {}, 'facts': 0, 'employments': 0}.items():
+                if d.get(key) is None:
+                    d[key] = default
             rows.append(d)
         if len(rows) >= limit:
             break

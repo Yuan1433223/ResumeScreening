@@ -94,7 +94,6 @@ def _fake_resume_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(api_module, "RESUME_DIR", tmp_path)
     monkeypatch.setattr(obs, "TRACES_DIR", tmp_path / "traces")
     # 清空进程内复核缓存，避免跨用例串味
-    api_module._REVIEW_EXTRACT_CACHE.clear()
     yield tmp_path
 
 

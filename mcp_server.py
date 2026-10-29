@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import http.cookiejar
 import os
 import urllib.error
 import urllib.request
@@ -28,6 +29,25 @@ API_BASE = os.environ.get("RESUME_API_BASE", "http://127.0.0.1:8017")
 mcp = MCPServer("resume-screening")
 
 
+_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+def _urlopen(req, *, data=None, timeout=30):
+    try:
+        return _OPENER.open(req, data=data, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 401:
+            raise
+        from src import config
+        if not config.AUTH_ENABLED:
+            raise
+        login = urllib.request.Request(API_BASE + '/api/auth/login', method='POST',
+            headers={'Content-Type': 'application/json'})
+        credentials = json.dumps({'username': config.AUTH_USERNAME, 'password': config.AUTH_PASSWORD}).encode()
+        with _OPENER.open(login, data=credentials, timeout=timeout) as response:
+            response.read()
+        return _OPENER.open(req, data=data, timeout=timeout)
+
+
 def _call(method: str, path: str, data: Dict[str, Any] | None = None,
           timeout: float = 30) -> Dict[str, Any]:
     req = urllib.request.Request(API_BASE + path, method=method)
@@ -36,7 +56,7 @@ def _call(method: str, path: str, data: Dict[str, Any] | None = None,
         body = json.dumps(data).encode("utf-8")
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, data=body, timeout=timeout) as r:
+        with _urlopen(req, data=body, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"API {e.code}: {e.read().decode('utf-8', 'ignore')[:200]}") from e
@@ -77,7 +97,7 @@ def upload_resume(file_path: str) -> Dict[str, Any]:
         API_BASE + "/api/upload", method="POST", data=b"".join(parts),
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
     )
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with _urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
@@ -100,10 +120,11 @@ def get_review(document_id: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def approve(document_id: str, decision: str, reason: str = "") -> Dict[str, Any]:
+def approve(document_id: str, decision: str, assessment_id: str, expected_version: str, request_id: str, reason: str = "") -> Dict[str, Any]:
     """提交人工审批：decision ∈ approve / hold / needs_review。"""
     return _call("POST", f"/api/documents/{document_id}/approve",
-                 {"decision": decision, "reason": reason})
+                 {"decision": decision, "reason": reason, "assessment_id": assessment_id,
+                  "expected_version": expected_version, "request_id": request_id})
 
 
 @mcp.tool()
@@ -145,7 +166,7 @@ def review_resume(document_id: str) -> str:
         "1. 调用 get_review 获取识别文本、抽取事实（含证据页码/引文）与评估明细；\n"
         "2. 逐条核对事实是否有原文证据支持、档位是否合理、是否存在矛盾或待确认项；\n"
         "3. 对照硬条件（钢结构全流程、海外项目、年限等）给出结论：通过/不通过/需人工；\n"
-        "4. 需要时调用 approve 提交审批，并说明理由。"
+        "4. 只有获得人工明确决定后才调用 approve；携带所查看的 assessment.id、job_version 及稳定 request_id，并说明理由。"
     )
 
 

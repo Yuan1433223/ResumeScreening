@@ -133,8 +133,7 @@ export default function TracePage() {
                     )}
                   </div>
                   <div className="hint trace-sub">
-                    {fmtTs(r.ts)} · {r.extractor === 'model' ? '大模型' : '规则'} · 解析{' '}
-                    {r.parse_status} · 事实 {r.facts} 条 · 经历 {r.employments} 段
+                    {fmtTs(r.ts)} · {r.event === 'review' ? `人工审批 · ${r.consumed ? '已完成恢复' : '等待恢复'}` : `${r.extractor === 'model' ? '模型' : '规则'} · 事实 ${r.facts} 条 · 经历 ${r.employments} 段`}
                   </div>
                 </div>
                 <div className="trace-right">

@@ -41,6 +41,13 @@ def _now() -> str:
 class TaskStore(ABC):
     """批次任务存储抽象边界。app/api.py 只依赖本接口，P2 可换实现。"""
 
+    def interrupt_running(self) -> None:
+        """单进程启动时收束上一次执行遗留的运行状态。"""
+        for task in self.list():
+            if task['status'] == 'running':
+                self.update(task['task_id'], status='interrupted', current_file='',
+                            error='服务已重启，批次处理已中断。已完成结果保留，请人工发起新批次。')
+
     @abstractmethod
     def create(self, task: Dict[str, Any]) -> str:
         """新建任务行，返回 task_id。"""

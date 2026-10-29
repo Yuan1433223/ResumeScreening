@@ -62,7 +62,6 @@ def _fake_resume_dir(tmp_path, monkeypatch):
     """API 指向合成简历目录；清空进程内展示缓存，避免跨用例串味。"""
     (tmp_path / "cv_test.pdf").write_bytes(_minimal_pdf(CV_TEXT))
     monkeypatch.setattr(api_module, "RESUME_DIR", tmp_path)
-    api_module._REVIEW_EXTRACT_CACHE.clear()
     yield tmp_path
 
 
@@ -81,139 +80,63 @@ def _create_and_wait(**kwargs) -> dict:
     return task
 
 
-# ---------------------------------------------------------------------------
-# a) mock 批次文档：GET review 仍走 mock 抽取（不回归）
-# ---------------------------------------------------------------------------
-def test_mock_batch_review_still_uses_mock():
-    body = _create_and_wait(limit=1, extractor="mock")
-    doc_id = body["rows"][0]["document_id"]
-
-    r = client.get(f"/api/documents/{doc_id}/review")
-    assert r.status_code == 200
-    data = r.json()
-    # 该文档 assessment 来自 mock 批次（抽取器自报版本 mock-v1）
-    assert data["assessment"] is not None
-    assert data["assessment"]["extractor_version"].startswith("mock")
-    # 左侧事实由 mock 抽取器现场产出（非空 list）
-    assert isinstance(data["facts"], list)
-    assert len(data["facts"]) >= 0  # mock 规则抽取结果集；不回归即可
-    assert data["assessment"]["recommendation"] in ("recommend", "needs_review", "hold")
-
-
-# ---------------------------------------------------------------------------
-# b) model 批次文档：GET review 必须传 "model"，且第二次不重复抽取
-# ---------------------------------------------------------------------------
-def test_model_assessment_review_passes_model_extractor(monkeypatch):
-    body = _create_and_wait(limit=1, extractor="mock")
-    doc_id = body["rows"][0]["document_id"]
-    repo = api_module._repo()
-
-    # 把该文档最近一次 assessment 的 extractor_version 改成 "model"，
-    # 模拟"评估来自 model 批次"但左侧事实仍被硬编码成 mock 的现场。
-    existing = repo.get_assessment_by_document(doc_id)
-    assert existing is not None, "mock 批次应已落 assessment"
-    fake = Assessment(
-        id=existing["id"],
-        document_id=doc_id,
-        job_version=existing["job_version"],
-        extractor_version="model",
-        rubric_version=existing.get("rubric_version", ""),
-        known_score=existing["known_score"],
-        score_complete=bool(existing["score_complete"]),
-        recommendation=Recommendation(existing["recommendation"]),
-        hard_summary=HardResult(existing["hard_summary"]),
-    )
-    repo.save_assessment(fake)
-    # save_assessment 以同 id 覆盖写；created_at 刷新 → 缓存键变化，旧条目自然失效
-
-    calls: list = []
-
-    def spy_extract(document_id, pages, extractor_version="mock"):
-        # 记录实际传入的抽取器版本；返回空报告，不触发任何真实云端调用
+@pytest.mark.parametrize('extractor', ['mock-v1', 'model-p1', 'unknown-future'])
+def test_review_uses_persisted_snapshot_without_extracting(monkeypatch, extractor):
+    import src.workflow as wf
+    from src.schemas import Fact, FactStatus, Evidence, EvidenceSource
+    calls = []
+    def extract(document_id, pages, extractor_version='mock'):
         calls.append(extractor_version)
-        return ExtractionReport(
-            extractor_version=extractor_version, facts=[], employments=[], warnings=[],
-        )
+        page = pages[0]
+        quote = 'English'
+        start = page.text.index(quote)
+        return ExtractionReport(extractor_version=extractor, facts=[Fact(
+            id='stable_fact', document_id=document_id, kind='english', value='info',
+            status=FactStatus.SUPPORTED,
+            evidences=[Evidence(id='stable_evidence', document_id=document_id, page_number=1,
+                                start=start, end=start+len(quote), quote=quote,
+                                source_type=EvidenceSource.PAGE_TEXT)])])
+    monkeypatch.setattr(wf, 'extract_facts', extract)
+    task = _create_and_wait(limit=1)
+    row = task['rows'][0]
+    def forbidden(*a, **k):
+        raise AssertionError('Reading a review must never call an extractor')
+    monkeypatch.setattr(api_module, 'extract_facts', forbidden)
+    url = f"/api/documents/{row['document_id']}/review"
+    first = client.get(url).json()
+    second = client.get(url).json()
+    assert calls == ['mock']
+    assert first == second
+    assert first['snapshot_available'] is True
+    assert first['assessment']['id'] == row['assessment_id']
+    assert first['assessment']['extractor_version'] == extractor
+    assert first['facts'][0]['id'] == 'stable_fact'
+    assert first['assessment']['dimensions']['english']['matched_facts'] == ['stable_fact']
+    assert first['pages'][0]['text'][first['facts'][0]['start']:first['facts'][0]['end']] == 'English'
 
-    monkeypatch.setattr(api_module, "extract_facts", spy_extract)
 
-    r1 = client.get(f"/api/documents/{doc_id}/review")
-    assert r1.status_code == 200
-    assert calls == ["model"], f"第一次 GET 必须用 model 抽取器，实际调用链: {calls}"
-    assert r1.json()["assessment"]["extractor_version"] == "model"
-
-    # 第二次 GET：缓存命中，不得再次触发抽取（不花钱、不重复云端调用）
-    r2 = client.get(f"/api/documents/{doc_id}/review")
-    assert r2.status_code == 200
-    assert calls == ["model"], (
-        f"第二次 GET 不应重复抽取（进程内展示缓存应命中），实际调用次数: {len(calls)}"
-    )
-    # 两次返回结构一致（同一缓存报告）
-    assert r1.json()["facts"] == r2.json()["facts"] == []
-
-# ---------------------------------------------------------------------------
-# b2) 版本归一：assessment 存抽取器自报版本（mock-v1 / model-p1），
-#     端点必须归一到 extract_facts 的分派键（mock / startswith("model")）
-# ---------------------------------------------------------------------------
-@pytest.mark.parametrize(("raw_version", "expected_dispatch"), [
-    ("mock-v1", "mock"),
-    ("model-p1", "model-p1"),   # startswith("model") 即走 ModelExtractor
-    ("unknown-future", "mock"), # 未知版本安全回退，不得抛 ValueError
-])
-def test_extractor_version_normalization(monkeypatch, raw_version, expected_dispatch):
-    body = _create_and_wait(limit=1, extractor="mock")
-    doc_id = body["rows"][0]["document_id"]
+def test_legacy_assessment_is_not_silently_reextracted(monkeypatch):
+    body = _create_and_wait(limit=1)
+    doc_id = body['rows'][0]['document_id']
     repo = api_module._repo()
-    existing = repo.get_assessment_by_document(doc_id)
-    fake = Assessment(
-        id=existing["id"],
-        document_id=doc_id,
-        job_version=existing["job_version"],
-        extractor_version=raw_version,
-        rubric_version=existing.get("rubric_version", ""),
-        known_score=existing["known_score"],
-        score_complete=bool(existing["score_complete"]),
-        recommendation=Recommendation(existing["recommendation"]),
-        hard_summary=HardResult(existing["hard_summary"]),
-    )
-    repo.save_assessment(fake)
-
-    calls: list = []
-
-    def spy_extract(document_id, pages, extractor_version="mock"):
-        calls.append(extractor_version)
-        return ExtractionReport(
-            extractor_version=extractor_version, facts=[], employments=[], warnings=[],
-        )
-
-    monkeypatch.setattr(api_module, "extract_facts", spy_extract)
-    r = client.get(f"/api/documents/{doc_id}/review")
-    assert r.status_code == 200
-    assert calls == [expected_dispatch], (
-        f"raw={raw_version} 应归一到 {expected_dispatch}，实际: {calls}"
-    )
+    previous = repo.get_assessment_by_document(doc_id)
+    repo.save_assessment(Assessment(id='legacy', document_id=doc_id, job_version='v1', extractor_version='model-p1'))
+    monkeypatch.setattr(api_module, 'extract_facts', lambda *a, **k: pytest.fail('no cloud on GET'))
+    response = client.get(f'/api/documents/{doc_id}/review').json()
+    assert response['assessment']['id'] == 'legacy'
+    assert response['snapshot_available'] is False
+    assert response['facts'] == []
+    assert response['warnings']
+    assert repo.get_assessment(previous['id']) is not None
 
 
-# ---------------------------------------------------------------------------
-# c) 复核详情必须把 payload 里的 hard_results / dimensions / missing_items 透出
-# ---------------------------------------------------------------------------
 def test_review_detail_exposes_payload_score_fields():
-    """assessments 表只把这三字段写进 payload JSON 列；端点必须解析 payload 透出。
+    body = _create_and_wait(limit=1)
+    data = client.get(f"/api/documents/{body['rows'][0]['document_id']}/review").json()
+    assert {'relevant_domain','experience','management','summary'} <= data['assessment']['hard_results'].keys()
+    assert len(data['assessment']['dimensions']) == 8
+    assert isinstance(data['assessment']['missing_items'], list)
 
-    回归：之前直接 assessment.get(...) 读列，列不存在，前端"评估明细"卡片永远空。
-    """
-    body = _create_and_wait(limit=1, extractor="mock")
-    doc_id = body["rows"][0]["document_id"]
-    r = client.get(f"/api/documents/{doc_id}/review")
-    assert r.status_code == 200
-    a = r.json()["assessment"]
-    assert a is not None
-    # hard_results 必须是带业务键的 dict（relevant_domain/experience/management/summary）
-    hr = a["hard_results"]
-    assert isinstance(hr, dict), f"hard_results 应为 dict，实际: {type(hr).__name__}"
-    for k in ("relevant_domain", "experience", "management", "summary"):
-        assert k in hr, f"hard_results 缺键 {k}: {list(hr.keys())}"
-    # missing_items 必须是 list（即使为空），不能是 None
-    assert isinstance(a["missing_items"], list), f"missing_items 应为 list: {a['missing_items']!r}"
-    # dimensions 是 dict（8 维评分明细，mock 批次下可能为空 dict 但结构必须是 dict）
-    assert isinstance(a["dimensions"], dict)
+
+def test_missing_snapshot_does_not_hide_document_not_found():
+    assert client.get('/api/documents/missing/review').status_code == 404

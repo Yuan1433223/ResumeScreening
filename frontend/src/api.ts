@@ -1,6 +1,7 @@
 import type {
   ApproveResult,
   BatchTask,
+  BatchResponse,
   Dashboard,
   LoginResponse,
   MeResponse,
@@ -43,23 +44,24 @@ export const api = {
       body: JSON.stringify({ limit, extractor }),
     }),
   getBatchTask: (taskId: string) => request<BatchTask>(`/api/batches/tasks/${taskId}`),
+  getBatch: (batchId: string) => request<BatchResponse>(`/api/batches/${encodeURIComponent(batchId)}`),
   listResumes: () => request<ResumeList>('/api/resumes'),
   upload: (file: File) => {
     const fd = new FormData()
     fd.append('file', file)
-    return request<{ file_name: string; saved: string }>('/api/upload', { method: 'POST', body: fd })
+    return request<{ file_name: string; saved: string; pii_warnings: string[] }>('/api/upload', { method: 'POST', body: fd })
   },
-  review: (documentId: string) => request<ReviewDetail>(`/api/documents/${documentId}/review`),
+  review: (documentId: string, assessmentId = '') => request<ReviewDetail>(`/api/documents/${documentId}/review${assessmentId ? `?assessment_id=${encodeURIComponent(assessmentId)}` : ''}`),
   /** 原始简历文件地址（PDF/图片直出，复核页左侧呈现） */
   fileUrl: (documentId: string) => `/api/documents/${documentId}/file`,
-  approve: (documentId: string, decision: string, reason: string) =>
+  approve: (documentId: string, decision: string, reason: string, assessmentId: string, version: string, requestId: string) =>
     request<ApproveResult>(`/api/documents/${documentId}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision, reason }),
+      body: JSON.stringify({ decision, reason, assessment_id: assessmentId, expected_version: version, request_id: requestId }),
     }),
-  scheduling: () => request<Scheduling>('/api/scheduling'),
-  runScheduling: () => request<Scheduling>('/api/scheduling/run', { method: 'POST' }),
+  scheduling: (batchId = '') => request<Scheduling>(`/api/scheduling${batchId ? `?batch_id=${encodeURIComponent(batchId)}` : ''}`),
+  runScheduling: (batchId = '') => request<Scheduling>(`/api/scheduling/run${batchId ? `?batch_id=${encodeURIComponent(batchId)}` : ''}`, { method: 'POST' }),
   getDashboard: () => request<Dashboard>('/api/dashboard'),
   listTraces: (params: { limit?: number; batch_id?: string; document_id?: string }) => {
     const qs = new URLSearchParams()

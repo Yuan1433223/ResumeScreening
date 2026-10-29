@@ -66,7 +66,7 @@ def test_duplicate_upload_reuses_document(tmp_path, _isolated_repository):
     runs = repo.list_runs()
     assert len(runs) == 1, "同内容文件应复用同一 run（执行身份 = thread 身份）"
     assert runs[0]["document_id"] == doc["id"]
-    assert runs[0]["assessment_id"] == f"{doc['id']}_{JOB_VERSION}"
+    assert repo.get_assessment(runs[0]["assessment_id"])["document_id"] == doc["id"]
 
     # 不重复评分：该 document + 版本 只有一条评估
     assessments = repo._conn.execute(
@@ -86,10 +86,11 @@ def test_rerun_same_file_reuses_run_and_resume(tmp_path, _isolated_repository):
 
     run_single(str(p), facts=high_score_facts(), employments=[], batch_id="b2")
     runs = repo.list_runs()
-    assert len(runs) == 1, "同文件重跑应复用同一 run"
+    assert len(runs) == 2, "跨批次必须保留独立执行和审批边界"
     r = runs[0]
-    assert r["id"] == run1["id"]
-    assert r["thread_id"] == run1["thread_id"]
+    assert r["id"] != run1["id"]
+    assert r["assessment_id"] != run1["assessment_id"]
+    assert r["thread_id"] != run1["thread_id"]
     assert r["batch_id"] == "b2", "重复分析应归属最新批次"
     assert r["status"] == "pending", "新一轮执行应从 pending 开始"
     assert r["assessment_id"] is not None, "评估必须链到真实 run（不能再静默 no-op）"
@@ -131,9 +132,9 @@ def test_new_job_version_creates_new_assessment(tmp_path, _isolated_repository, 
     p.write_bytes(b"%PDF-1.4 synthetic-lisi")
 
     run_single(str(p), facts=high_score_facts(), employments=[], document_id="doc_ver")
-    a1 = repo.get_assessment(f"doc_ver_{JOB_VERSION}")
+    a1 = repo.get_assessment_by_document("doc_ver")
     assert a1 is not None
-    submit_review(f"doc_ver_{JOB_VERSION}", JOB_VERSION, ReviewDecision.APPROVE,
+    submit_review(a1["id"], JOB_VERSION, ReviewDecision.APPROVE,
                   reason="v1 审批", request_id="req_v1")
 
     # 岗位规则升级到 v2
@@ -143,15 +144,15 @@ def test_new_job_version_creates_new_assessment(tmp_path, _isolated_repository, 
     monkeypatch.setattr(wf, "JOB_VERSION", "v2")
 
     run_single(str(p), facts=high_score_facts(), employments=[], document_id="doc_ver")
-    a2 = repo.get_assessment("doc_ver_v2")
+    a2 = repo.get_assessment_by_document("doc_ver")
     assert a2 is not None
     assert a2["job_version"] == "v2"
     assert a2["id"] != a1["id"], "新版本必须使用新评估版本键"
 
     # 旧版本号提交到新评估 → 版本冲突
     with pytest.raises(VersionConflictError):
-        submit_review("doc_ver_v2", "v1", ReviewDecision.APPROVE, request_id="req_v2_bad")
+        submit_review(a2["id"], "v1", ReviewDecision.APPROVE, request_id="req_v2_bad")
     # 新版本匹配 → 可审批
-    r = submit_review("doc_ver_v2", "v2", ReviewDecision.APPROVE, request_id="req_v2")
+    r = submit_review(a2["id"], "v2", ReviewDecision.APPROVE, request_id="req_v2")
     assert r.decision == ReviewDecision.APPROVE
     assert repo.get_run(repo.list_runs()[0]["id"])["status"] == "finished"

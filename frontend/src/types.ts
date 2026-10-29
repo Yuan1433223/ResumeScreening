@@ -1,6 +1,8 @@
 // API 返回类型（与 app/api.py 对齐）
 
 export interface BatchRow {
+  assessment_id: string
+  last_error?: string | null
   run_id: string
   document_id: string
   candidate: string
@@ -27,7 +29,7 @@ export interface BatchTask {
   task_id: string
   batch_id: string
   extractor: 'mock' | 'model'
-  status: 'running' | 'done'
+  status: 'running' | 'done' | 'failed' | 'interrupted'
   total: number
   done: number
   current_file: string
@@ -41,6 +43,9 @@ export interface ResumeList {
 }
 
 export interface ReviewFact {
+  id: string
+  start: number | null
+  end: number | null
   kind: string
   value: unknown
   status: string
@@ -63,6 +68,10 @@ export interface DimScore {
 }
 
 export interface ReviewDetail {
+  snapshot_available: boolean
+  is_current: boolean
+  run_id: string | null
+  review: { id: string; request_id: string; decision: string; reason: string; consumed: boolean } | null
   document_id: string
   file_name: string
   ext: string
@@ -77,6 +86,9 @@ export interface ReviewDetail {
   evidence_valid: { valid_count: number; total: number } | null
   warnings: string[]
   assessment: {
+    analysis_date: string
+    id: string
+    created_at: string
     job_version: string
     hard_results: Record<string, unknown>
     dimensions: Record<string, DimScore>
@@ -89,6 +101,8 @@ export interface ReviewDetail {
 }
 
 export interface ApproveResult {
+  recovery_pending: boolean
+  message: string
   review_id: string
   decision: string
   审批状态: string
@@ -108,6 +122,10 @@ export interface Slot {
 }
 
 export interface Booking {
+  meeting_status: string
+  meeting_id: string | null
+  notify_id: string | null
+  last_error: string | null
   booking_id: string
   candidate: string
   document_id: string
@@ -117,6 +135,8 @@ export interface Booking {
 }
 
 export interface Scheduling {
+  approved_count?: number
+  pending_count?: number
   batch_id: string | null
   round: { id: string; round_no: number; status: string } | null
   slots: Slot[]
@@ -162,6 +182,8 @@ export interface Dashboard {
 
 // ===== Trace 追踪 =====
 export interface TraceRow {
+  event?: string
+  consumed?: boolean
   ts: string
   seq: number
   batch_id: string

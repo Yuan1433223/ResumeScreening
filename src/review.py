@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import uuid
+import threading
 from typing import Optional
 
 from .repository import Repository, get_repository
@@ -22,11 +23,14 @@ class ReviewNotFoundError(Exception):
     """指定的评估或审批不存在。"""
 
 
+_REVIEW_LOCK = threading.RLock()
+
+
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
-def submit_review(
+def _submit_review(
     assessment_id: str,
     expected_version: str,
     decision: ReviewDecision | str,
@@ -54,6 +58,22 @@ def submit_review(
     if isinstance(decision, str):
         decision = ReviewDecision(decision)
 
+    existing = repo.get_review_by_request(request_id) if request_id else None
+    if existing:
+        if existing.assessment_id != assessment_id or existing.decision != decision:
+            raise VersionConflictError('幂等键已用于另一项审批')
+        _resume_assessment(assessment_id, repo)
+        return repo.get_review_by_request(existing.request_id)
+    latest = repo.get_assessment_by_document(assessment['document_id'])
+    if latest and latest['id'] != assessment_id:
+        raise VersionConflictError('评估已更新，请刷新后复核最新证据')
+    if repo.get_reviews(assessment_id):
+        raise VersionConflictError('该评估已提交审批；如需重新决定，请创建新评估')
+    for run in repo.list_runs(assessment_id=assessment_id):
+        batch = repo.get_batch(run['batch_id']) if run.get('batch_id') else None
+        if batch and batch['status'] != 'open':
+            raise VersionConflictError('该批次已结束审批，请在新批次中重新分析')
+
     review = Review(
         id=_new_id("rev"),
         assessment_id=assessment_id,
@@ -64,13 +84,16 @@ def submit_review(
         request_id=request_id or _new_id("req"),
     )
     created = repo.create_review(review)
-    if created.request_id != review.request_id:
-        # 重复提交：已有记录，直接返回（幂等）
-        return created
-
     # 恢复 LangGraph 任务（审批已入库，进程崩溃后仍可恢复）
     _resume_assessment(assessment_id, repo)
     return created
+
+
+def submit_review(*args, **kwargs) -> Review:
+    # 单用户进程内串行提交；数据库仍以 request_id 唯一约束防重。
+    from .scheduler import _SCHEDULE_LOCK
+    with _SCHEDULE_LOCK, _REVIEW_LOCK:
+        return _submit_review(*args, **kwargs)
 
 
 def _resume_assessment(assessment_id: str, repo: Repository) -> None:

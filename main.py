@@ -371,14 +371,14 @@ def main():
 
     p = sub.add_parser("review", help="提交审批")
     p.add_argument("assessment_id")
-    p.add_argument("decision", choices=["approve", "hold", "reject"])
+    p.add_argument("decision", choices=["approve", "hold", "needs_review"])
     p.add_argument("--version", default=None)
     p.add_argument("--request-id", default="")
     p.add_argument("--reason", default="")
 
     p = sub.add_parser("resume", help="恢复被中断的任务")
     p.add_argument("run_id")
-    p.add_argument("--decision", choices=["approve", "hold", "reject"], default=None)
+    p.add_argument("--decision", choices=["approve", "hold", "needs_review"], default=None)
 
     p = sub.add_parser("schedule", help="批次排期 + 建会通知（可注入故障演示幂等）")
     p.add_argument("batch_id")

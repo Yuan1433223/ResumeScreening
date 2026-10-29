@@ -221,7 +221,7 @@ def test_approve_flow():
     created = _create_and_wait(limit=1)
     doc_id = created["rows"][0]["document_id"]
     r = client.post(f"/api/documents/{doc_id}/approve",
-                    json={"decision": "approve", "reason": "测试批准"})
+                    json={"decision": "approve", "reason": "测试批准", "assessment_id": created['rows'][0]['assessment_id'], "expected_version": api_module.JOB_PROFILE.version, "request_id": 'test_flow'})
     assert r.status_code == 200
     body = r.json()
     assert body["review_id"]
@@ -284,7 +284,7 @@ def test_scheduling_run_requires_batch():
 def test_scheduling_flow():
     created = _create_and_wait(limit=1)
     doc_id = created["rows"][0]["document_id"]
-    client.post(f"/api/documents/{doc_id}/approve", json={"decision": "approve"})
+    client.post(f"/api/documents/{doc_id}/approve", json={"decision": "approve", "assessment_id": created['rows'][0]['assessment_id'], "expected_version": api_module.JOB_PROFILE.version, "request_id": 'test_scheduling'})
     r = client.post("/api/scheduling/run")
     assert r.status_code == 200
     body = r.json()
@@ -294,6 +294,7 @@ def test_scheduling_flow():
     assert len(body["bookings"]) >= 1
     confirmed = [b for b in body["bookings"] if b["status"] == "confirmed"]
     assert confirmed, "已批准候选人应获得确认时段"
-    # 幂等：重复排期返回 409（提示直接查询）
+    # 幂等：重复排期返回已有预约，并允许只重试失败的外部动作
     r2 = client.post("/api/scheduling/run")
-    assert r2.status_code == 409
+    assert r2.status_code == 200
+    assert [b["booking_id"] for b in r2.json()["bookings"]] == [b["booking_id"] for b in body["bookings"]]

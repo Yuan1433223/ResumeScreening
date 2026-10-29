@@ -66,6 +66,7 @@ class Repository:
                 id TEXT PRIMARY KEY,
                 sha256 TEXT NOT NULL UNIQUE,
                 storage_path TEXT NOT NULL,
+                file_name TEXT NOT NULL DEFAULT '',
                 mime TEXT NOT NULL DEFAULT '',
                 parse_status TEXT NOT NULL DEFAULT 'pending',
                 parser_version TEXT NOT NULL DEFAULT '',
@@ -183,6 +184,13 @@ class Repository:
         self._conn.commit()
         self._ensure_pii_columns()
         self._ensure_org_columns()
+        columns = {r['name'] for r in self._conn.execute('PRAGMA table_info(documents)')}
+        if 'file_name' not in columns:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN file_name TEXT NOT NULL DEFAULT ''")
+        self._conn.execute('''CREATE VIEW IF NOT EXISTS current_assessments AS
+            SELECT a.* FROM assessments a WHERE a.id=(SELECT b.id FROM assessments b
+                WHERE b.document_id=a.document_id ORDER BY b.created_at DESC, b.rowid DESC LIMIT 1)''')
+        self._conn.commit()
 
     # P2 多租户预留：documents/assessments/runs/batches 四表已加 org_id 列
     # （默认 'local'）。P2a 不实现多租户隔离——查询方法不加 org_id 过滤；
@@ -270,14 +278,21 @@ class Repository:
     # ------------------------------------------------------------------
     def upsert_document(self, doc_id: str, sha256: str, storage_path: str,
                         mime: str, parse_status: str = "pending",
-                        parser_version: str = "") -> None:
+                        parser_version: str = "", file_name: str = "") -> None:
+        existing = self.get_document(doc_id)
+        if existing and existing['sha256'] != sha256:
+            raise ValueError('文档身份不能用于不同内容')
         self._conn.execute(
             """INSERT INTO documents (id, sha256, storage_path, mime, parse_status, parser_version, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
+                 storage_path=excluded.storage_path,
                  parse_status=excluded.parse_status, parser_version=excluded.parser_version""",
             (doc_id, sha256, storage_path, mime, parse_status, parser_version, _now()),
         )
+        self._conn.commit()
+        self._conn.execute('UPDATE documents SET file_name=? WHERE id=? AND file_name=\'\'',
+                           (file_name or Path(storage_path).name, doc_id))
         self._conn.commit()
 
     def get_document_by_sha(self, sha256: str) -> Optional[Dict[str, Any]]:
@@ -294,6 +309,7 @@ class Repository:
 
     def save_pages(self, document_id: str, pages: List[Any]) -> None:
         with self._conn:
+            self._conn.execute('DELETE FROM pages WHERE document_id=?', (document_id,))
             for p in pages:
                 self._conn.execute(
                     """INSERT OR REPLACE INTO pages
@@ -313,7 +329,7 @@ class Repository:
         payload = assessment.model_dump(mode="json") if hasattr(assessment, "model_dump") else assessment
         with self._conn:
             self._conn.execute(
-                """INSERT OR REPLACE INTO assessments
+                """INSERT OR IGNORE INTO assessments
                    (id, document_id, job_version, extractor_version, rubric_version,
                     known_score, score_complete, recommendation, hard_summary, payload, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -334,7 +350,7 @@ class Repository:
 
     def get_assessment_by_document(self, document_id: str) -> Optional[Dict[str, Any]]:
         row = self._conn.execute(
-            "SELECT * FROM assessments WHERE document_id=? ORDER BY created_at DESC LIMIT 1",
+            "SELECT * FROM assessments WHERE document_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
             (document_id,),
         ).fetchone()
         return dict(row) if row else None
@@ -360,6 +376,10 @@ class Repository:
                  review.reason, review.reviewer_id, review.created_at.isoformat()),
             )
         return review
+
+    def get_review_by_request(self, request_id: str) -> Optional[Review]:
+        row = self._conn.execute('SELECT * FROM reviews WHERE request_id=?', (request_id,)).fetchone()
+        return self._row_to_review(row) if row else None
 
     def get_unconsumed_review(self, assessment_id: str) -> Optional[Review]:
         row = self._conn.execute(
@@ -390,6 +410,10 @@ class Repository:
                JOIN reviews rv ON rv.assessment_id = a.id AND rv.decision='approve' AND rv.consumed=1
                JOIN runs ru ON ru.assessment_id = a.id AND ru.batch_id = ?
                WHERE a.job_version = ?
+               AND rv.id = (SELECT id FROM reviews WHERE assessment_id=a.id ORDER BY created_at DESC, rowid DESC LIMIT 1)
+               AND a.id = (SELECT aa.id FROM assessments aa JOIN runs rr ON rr.assessment_id=aa.id
+                           WHERE rr.batch_id=ru.batch_id AND aa.document_id=a.document_id
+                           ORDER BY aa.created_at DESC, aa.rowid DESC LIMIT 1)
                GROUP BY a.document_id""",
             (batch_id, job_version),
         ).fetchall()
@@ -406,6 +430,7 @@ class Repository:
             reason=row["reason"],
             reviewer_id=row["reviewer_id"],
             created_at=datetime.fromisoformat(row["created_at"]),
+            consumed=bool(row['consumed']),
         )
 
     # ------------------------------------------------------------------
@@ -428,7 +453,7 @@ class Repository:
             # 更新为最新批次归属，并重置为新一轮执行（status pending、清除 finished_at）。
             with self._conn:
                 self._conn.execute(
-                    """UPDATE runs SET batch_id=?, status='pending', finished_at=NULL
+                    """UPDATE runs SET batch_id=?
                        WHERE thread_id=?""",
                     (batch_id, thread_id),
                 )
@@ -839,26 +864,26 @@ class Repository:
         取 created_at 最新一条再 GROUP BY。
         """
         rows = self._conn.execute(
-            "SELECT recommendation, COUNT(*) AS n FROM assessments GROUP BY recommendation"
+            "SELECT recommendation, COUNT(*) AS n FROM current_assessments GROUP BY recommendation"
         ).fetchall()
         return {r["recommendation"]: int(r["n"]) for r in rows}
 
     def count_assessments_total(self) -> int:
         """kpi.review_rate 分母：assessments 总行数。"""
-        row = self._conn.execute("SELECT COUNT(*) AS n FROM assessments").fetchone()
+        row = self._conn.execute("SELECT COUNT(*) AS n FROM current_assessments").fetchone()
         return int(row["n"])
 
     def count_hard_passed(self) -> int:
         """funnel.hard_passed：assessments.hard_summary='pass' 行数。"""
         row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM assessments WHERE hard_summary='pass'"
+            "SELECT COUNT(*) AS n FROM current_assessments WHERE hard_summary='pass'"
         ).fetchone()
         return int(row["n"])
 
     def count_scored(self) -> int:
         """funnel.scored：assessments.score_complete=1 行数（完成评分）。"""
         row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM assessments WHERE score_complete=1"
+            "SELECT COUNT(*) AS n FROM current_assessments WHERE score_complete=1"
         ).fetchone()
         return int(row["n"])
 
@@ -868,14 +893,14 @@ class Repository:
         用 COUNT(DISTINCT assessment_id) 避免同一评估多次审批重复计数。
         """
         row = self._conn.execute(
-            "SELECT COUNT(DISTINCT assessment_id) AS n FROM reviews WHERE decision='approve'"
+            "SELECT COUNT(DISTINCT rv.assessment_id) AS n FROM reviews rv JOIN current_assessments a ON a.id=rv.assessment_id WHERE rv.decision='approve' AND rv.id=(SELECT id FROM reviews WHERE assessment_id=a.id ORDER BY created_at DESC, rowid DESC LIMIT 1)"
         ).fetchone()
         return int(row["n"])
 
     def avg_known_score_scored(self) -> Optional[float]:
         """kpi.avg_score：score_complete=1 样本的 known_score 平均值；无样本返回 None。"""
         row = self._conn.execute(
-            "SELECT AVG(known_score) AS a FROM assessments WHERE score_complete=1"
+            "SELECT AVG(known_score) AS a FROM current_assessments WHERE score_complete=1"
         ).fetchone()
         if row is None or row["a"] is None:
             return None
@@ -889,7 +914,7 @@ class Repository:
         返回与前端契约顺序一致的 6 个桶（无样本也补 0）。
         """
         rows = self._conn.execute(
-            "SELECT known_score FROM assessments WHERE score_complete=1"
+            "SELECT known_score FROM current_assessments WHERE score_complete=1"
         ).fetchall()
         buckets = [
             ("0-20", 0, 20),
@@ -919,7 +944,7 @@ class Repository:
         无任何数据返回空 dict。
         """
         rows = self._conn.execute(
-            "SELECT payload FROM assessments"
+            "SELECT payload FROM current_assessments"
         ).fetchall()
         # dim_key -> Counter{level: count}
         agg: Dict[str, Dict[int, int]] = {}
