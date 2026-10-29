@@ -2,6 +2,8 @@
 
 > 这是一份操作手册，不是设计文档。改代码前先读这一页；不确定的约定以 `src/` 源码为准，不要凭记忆臆造。
 
+> **2026-10-28 收尾定位**：企业面试场景的工程作品集。当前以整理架构、模型边界和已有证据为完成范围，不继续扩成招聘产品。当前说明以 [README](README.md)、[架构与实现限制](docs/architecture.md)、[工程参考](docs/engineering-reference.md) 为准；历史规格与 HTML 升级报告不作为新任务授权。
+
 ## 1. 这个项目是什么
 
 基于 **LangGraph** 的 AI 简历筛选 Agent，目标岗位是「海外项目负责人 · 钢结构 / MiC 模块化建筑」。核心链路：PDF 解析 → 证据抽取 → 硬条件校验 → 评分 → **人工复核（interrupt）** → 审批落库 → 排期 → 建会通知。
@@ -63,12 +65,12 @@ cd frontend; npm run build     # 产物给 nginx 反代 /api
 
 # CLI 主流程
 .venv\Scripts\python.exe main.py batch --limit 5          # 批量分析（停在审批节点）
-.venv\Scripts\python.exe main.py review --request-id <id> --decision approve
-.venv\Scripts\python.exe main.py resume --decision approve|hold|reject   # 恢复中断线程
-.venv\Scripts\python.exe main.py schedule --retry         # 排期+建会+通知，可 --fail-notify/--fail-meeting 注入故障
-.venv\Scripts\python.exe main.py export --redact          # 导出；--redact 脱敏后才可外发
+.venv\Scripts\python.exe main.py review <assessment_id> approve --request-id <request_id>
+.venv\Scripts\python.exe main.py resume <run_id>           # 恢复中断线程或补收尾
+.venv\Scripts\python.exe main.py schedule <batch_id> --retry # 可 --fail-notify/--fail-meeting 注入故障
+.venv\Scripts\python.exe main.py export <batch_id> --redact # 附加打码的 PII 列；不等于全面匿名化
 .venv\Scripts\python.exe main.py purge --days 30 --dry-run  # 保留期清理；先 dry-run 看清单再删
-.venv\Scripts\python.exe main.py clean --document_id <id> # 按文档删除
+.venv\Scripts\python.exe main.py clean <document_id>       # 按文档删除
 .venv\Scripts\python.exe main.py graph --png             # 导出工作流图
 
 # MCP server
@@ -87,14 +89,14 @@ parse → extract → validate → screen → score → review(interrupt) → ap
 ```
 
 - `parse` / `validate` 失败不中断流程，而是**条件路由进 `review` 转人工**，绝不静默丢弃。
-- `review` 节点 `interrupt` 等待人工审批；`Command(resume=decision)` 恢复后进入 `apply` 落库。
+- `review` 节点 `interrupt` 等待人工审批；审批服务先持久化审批，再通过 `Command(resume=decision)` 恢复到 `apply/report`。
 - 排期是独立子链：`create_round → close_round → schedule_round（按总分>MiC>海外>管理排序 + 原子占槽）→ run_external（建会→通知）`；**建会/通知失败只重试失败动作**，不整体重跑。
 
 ### 4.2 证据引用铁律（最高优先级）
 
 - 每条结论必须带 `quote`（简历原文切片）+ 程序计算的字符偏移，可回溯到原文对应位置。
 - 硬条件三态：`pass / fail / unknown`；**unknown = 沉默 ≠ 通过**，一律降级转人工复核。
-- 模型抽取受两道防线约束：① 领域词表一致性校验（引文必须语义支撑所贴档位，否则降级 UNKNOWN）；② 任职年限引文校验（见 `tests/test_t11`）。
+- 模型抽取包含两项有限检查：① 引文包含该事实领域的证据词，否则部分事实降级 UNKNOWN；② 任职年份可在引文定位（见 `tests/test_t11`）。这不等同于证明语义足以支持具体档位。
 
 ### 4.3 幂等
 
@@ -104,7 +106,7 @@ parse → extract → validate → screen → score → review(interrupt) → ap
 
 ### 4.4 身份与多租户边界
 
-- 三类身份严格分离：**文档身份（document_id）/ 评估版本键（version）/ 执行线程身份（thread_id）**。
+- 分别保存文档身份、岗位/抽取器版本和执行线程身份；当前同文档同岗位版本仍会覆盖评估，旧审批可能影响新批次。不要把设计上的身份区分表述为已实现严格评估版本隔离。
 - `documents` 表已预留 `org_id` 列，为多租户（P2）留边界；当前单租户，不要提前实现多租户逻辑。
 
 ### 4.5 PII 红线
@@ -124,25 +126,27 @@ parse → extract → validate → screen → score → review(interrupt) → ap
 
 ## 6. 评测与安全现状
 
-- 离线评测在 **7 份真实简历**上跑：mock 基线 F1 0.36 vs 本模型 F1 0.73；指标含 P/R/F1、转人工率、成本与延迟 P50/P95、跨运行一致性。聚合结果脱敏后放 `eval/published/`。
-- 注入防线：领域词表一致性校验 + 任职年限引文校验（`test_t11`），模型若编造档位会被降级转人工。
-- PII 四件套：字段加密 / 上传即提示 / 保留期 `purge` / 导出 `--redact`。
+- 历史评测（2026-09-18）在 **7 份 dev 简历**上跑：规则 F1 0.36 vs 模型 F1 0.73；仅代表当次事实抽取，不代表当前代码重测或招聘决策质量。聚合结果在 `eval/published/`；历史 review_rate 是抽取警告触发率，不是实际人工复核率。
+- 有限注入风险缓解：领域词表与任职年份引用检查（`test_t11`），不等同于完整语义验证或全面防注入。
+- PII：仅 `documents.pii_*` 三列加密，原文等仍明文；上传提示是粗扫；`purge` 需显式执行；`--redact` 只额外附加打码列，不是全面匿名化。
 - 认证：默认关闭，可配置开启（单用户、pbkdf2、签名 cookie、启动 fail-fast 校验密钥）。
 
-## 7. 已知边界（别当成 bug 修）
+## 7. 运行边界与已确认限制
 
 - 单用户本地部署定位，未做多用户/多租户。
 - `scheduler / calendar / notifier` 均为 **mock 实现**，真实接入换 `providers/` 即可。
 - Docker 未实机构建验证：`compose` 需 v2.24+，前端镜像用 nginx 反代 `/api`。
 - OCR：tesseract 可选，缺失时自动回退 rapidocr。
+- 复核重抽取、同路径文件缓存失效、审批版本与后台线程恢复限制见 [架构说明](docs/architecture.md#当前实现限制)。这些是已确认限制，不应仅因 README 曾将旧审批显示写成预期就忽略其排期影响。
+- CLI 声明 reject 但内部枚举不支持；文档示例只使用 approve / hold。MCP 默认代理不携带登录 Cookie。
 
 ## 8. 易错点速查
 
 - 排期候选排序键：**总分 > 是否 MiC/钢结构直接经验 > 海外经验 > 管理经验**，同分时按此优先级决定谁占 45 分钟时段。
 - 解析失败 / 校验失败不是报错退出，而是路由进 `review` 转人工——别把它当异常重试。
-- `review` 提交后线程处于 interrupt 态，必须用对应 `--decision` 的 `resume` 才会继续到 `apply/report`。
-- 想外发结果先 `export --redact`；不带 `--redact` 的导出含明文 PII，仅限本地看。
-- 想演示幂等 / 重试：`schedule --fail-notify N --fail-meeting N --retry`，观察只补失败动作。
+- `submit_review` 会尝试恢复图；`resume <run_id>` 用于中断恢复，不是每次审批后的必需步骤。
+- 默认导出不附加三个独立 PII 列；`--redact` 附加打码列。文件名、报告等仍可能含个人信息，不能据此承诺完整脱敏。
+- 现有幂等 / 重试演示：`schedule <batch_id> --fail-notify N --fail-meeting N --retry`，观察只补失败动作。
 - 改完任何东西，第一件事永远是跑一次 `pytest -q`，不要先提交。
 
 ---

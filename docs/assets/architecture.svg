@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1100" viewBox="0 0 1440 1100" role="img" aria-labelledby="title desc">
+  <title id="title">ResumeScreening 系统架构与职责边界</title>
+  <desc id="desc">React 经 FastAPI 进入 LangGraph 候选人分析工作流；CLI 直接调用业务模块，MCP 代理 API。模型仅参与事实抽取，评分由程序完成，审批由人工完成。业务库、检查点、处理摘要分别存储；排期及模拟外部动作由独立入口触发。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#6b7c87"/></marker>
+    <marker id="green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#176858"/></marker>
+    <style>
+      text{font-family:'Microsoft YaHei','Noto Sans CJK SC',sans-serif;fill:#172c38}
+      .title{font-size:34px;font-weight:700}.sub{font-size:17px;fill:#536773}
+      .eyebrow{font-size:13px;fill:#176858;font-weight:700;letter-spacing:2px}
+      .section{font-size:21px;font-weight:700}.name{font-size:19px;font-weight:700}
+      .label{font-size:16px}.muted{font-size:14px;fill:#536773}.small{font-size:13px;fill:#536773}
+      .code{font-family:Consolas,monospace;font-size:18px;font-weight:700}
+      .panel{fill:white;stroke:#d5dfe3;stroke-width:1.5}.node{fill:#f6f9fa;stroke:#d5dfe3;stroke-width:1.5}
+      .line{fill:none;stroke:#6b7c87;stroke-width:1.7;marker-end:url(#arrow)}
+      .dash{fill:none;stroke:#6b7c87;stroke-width:1.5;stroke-dasharray:5 5;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1440" height="1100" fill="#f3f6f7"/>
+  <rect x="48" y="40" width="7" height="69" rx="3" fill="#176858"/>
+  <text x="72" y="57" class="eyebrow">ENGINEERING CASE STUDY / 2026-10-28</text>
+  <text x="72" y="99" class="title">ResumeScreening · 系统架构与职责边界</text>
+  <text x="1392" y="99" text-anchor="end" class="sub">模型抽取 · 规则评分 · 人工审批</text>
+
+  <rect x="48" y="148" width="306" height="100" rx="12" class="panel"/>
+  <text x="70" y="181" class="name">React / TypeScript 工作台</text>
+  <text x="70" y="210" class="muted">批次 · 原文与事实 · 审批 · 排期</text>
+  <text x="70" y="232" class="small">Dashboard / 处理记录 / 登录</text>
+  <rect x="402" y="148" width="306" height="100" rx="12" class="panel"/>
+  <text x="424" y="181" class="name">FastAPI 服务入口</text>
+  <text x="424" y="210" class="muted">REST / 后台批次线程 / SSE</text>
+  <text x="424" y="232" class="small">业务与任务查询共用 SQLite</text>
+  <rect x="756" y="148" width="274" height="100" rx="12" class="panel"/>
+  <text x="778" y="181" class="name">CLI</text>
+  <text x="778" y="210" class="muted">直接复用业务模块</text>
+  <text x="778" y="232" class="small">分析 / 审批 / 恢复 / 导出</text>
+  <rect x="1078" y="148" width="314" height="100" rx="12" class="panel"/>
+  <text x="1100" y="181" class="name">MCP 适配器</text>
+  <text x="1100" y="210" class="muted">tools / resources / prompts</text>
+  <text x="1100" y="232" class="small">stdio / HTTP；薄代理工作台 API</text>
+  <path d="M354 196H394" class="line"/>
+  <path d="M1235 148V127H555V140" class="line"/>
+  <path d="M555 248V298" class="line"/>
+  <path d="M893 248V298" class="line"/>
+  <text x="577" y="281" class="small">调用候选人分析工作流</text>
+
+  <rect x="48" y="307" width="1344" height="287" rx="14" class="panel"/>
+  <text x="72" y="344" class="section">候选人工作流 · LangGraph</text>
+  <text x="1368" y="344" text-anchor="end" class="muted">每份简历独立 thread；图执行由进程内锁串行化</text>
+  <text x="72" y="374" class="muted">PDF / 图片 / DOCX → 分页文本 → 事实与证据 → 机器建议 → 人工决定</text>
+
+  <rect x="72" y="405" width="144" height="89" rx="9" class="node"/>
+  <text x="144" y="434" text-anchor="middle" class="code">parse</text>
+  <text x="144" y="459" text-anchor="middle" class="label">分页解析 / OCR</text>
+  <text x="144" y="480" text-anchor="middle" class="small">复用页面缓存</text>
+  <rect x="236" y="405" width="144" height="89" rx="9" fill="#fff4db" stroke="#dbb769" stroke-width="1.5"/>
+  <text x="308" y="434" text-anchor="middle" class="code">extract</text>
+  <text x="308" y="459" text-anchor="middle" class="label">规则 / 云端模型</text>
+  <text x="308" y="480" text-anchor="middle" class="small">事实、任职、引文</text>
+  <rect x="400" y="405" width="144" height="89" rx="9" class="node"/>
+  <text x="472" y="434" text-anchor="middle" class="code">validate</text>
+  <text x="472" y="459" text-anchor="middle" class="label">程序校验证据</text>
+  <text x="472" y="480" text-anchor="middle" class="small">页码 / 字符切片</text>
+  <rect x="564" y="405" width="144" height="89" rx="9" class="node"/>
+  <text x="636" y="434" text-anchor="middle" class="code">screen</text>
+  <text x="636" y="459" text-anchor="middle" class="label">硬条件三态</text>
+  <text x="636" y="480" text-anchor="middle" class="small">通过 / 失败 / 未知</text>
+  <rect x="728" y="405" width="144" height="89" rx="9" class="node"/>
+  <text x="800" y="434" text-anchor="middle" class="code">score</text>
+  <text x="800" y="459" text-anchor="middle" class="label">八维规则评分</text>
+  <text x="800" y="480" text-anchor="middle" class="small">未知项保留 unknown</text>
+  <rect x="892" y="405" width="144" height="89" rx="9" fill="#e8f4ee" stroke="#75a591" stroke-width="1.5"/>
+  <text x="964" y="434" text-anchor="middle" class="code">review</text>
+  <text x="964" y="459" text-anchor="middle" class="label">interrupt 人工暂停</text>
+  <text x="964" y="480" text-anchor="middle" class="small">人工决定后恢复</text>
+  <rect x="1056" y="405" width="144" height="89" rx="9" class="node"/>
+  <text x="1128" y="434" text-anchor="middle" class="code">apply</text>
+  <text x="1128" y="459" text-anchor="middle" class="label">应用审批</text>
+  <text x="1128" y="480" text-anchor="middle" class="small">不在此创建会议</text>
+  <rect x="1220" y="405" width="144" height="89" rx="9" class="node"/>
+  <text x="1292" y="434" text-anchor="middle" class="code">report</text>
+  <text x="1292" y="459" text-anchor="middle" class="label">汇总报告</text>
+  <text x="1292" y="480" text-anchor="middle" class="small">END</text>
+  <path d="M216 447H232" class="line"/><path d="M380 447H396" class="line"/><path d="M544 447H560" class="line"/><path d="M708 447H724" class="line"/><path d="M872 447H888" class="line"/><path d="M1036 447H1052" class="line"/><path d="M1200 447H1216" class="line"/>
+  <path d="M144 494V528H944V498" class="dash"/>
+  <path d="M472 494V514H964V498" class="dash"/>
+  <rect x="304" y="530" width="355" height="27" rx="5" fill="white"/>
+  <text x="319" y="549" class="muted">解析失败 / 证据校验失败 → 直接转人工</text>
+  <text x="72" y="576" class="small">正常分析也会暂停等待审批；recommend / hold 是机器建议。黄色节点表示模型能力所在的环节。</text>
+
+  <path d="M720 594V622H260V648M720 622V648M720 622H1180V648" class="dash"/>
+  <rect x="48" y="653" width="424" height="134" rx="12" class="panel"/>
+  <text x="70" y="688" class="name">业务 SQLite · WAL</text>
+  <text x="70" y="718" class="label">文档 / 页面 / 评估 / 审批 / 排期</text>
+  <text x="70" y="746" class="muted">Repository 连接锁；TaskStore 保存批次快照</text>
+  <text x="70" y="769" class="small">任务快照可读取 ≠ 重启后自动续跑</text>
+  <rect x="508" y="653" width="424" height="134" rx="12" class="panel"/>
+  <text x="530" y="688" class="name">检查点 SQLite · SqliteSaver</text>
+  <text x="530" y="718" class="label">LangGraph state / thread / interrupt</text>
+  <text x="530" y="746" class="muted">审批先入库 → 恢复图 → 成功后消费审批</text>
+  <text x="530" y="769" class="small">候选人审批恢复与批次线程恢复是不同边界</text>
+  <rect x="968" y="653" width="424" height="134" rx="12" class="panel"/>
+  <text x="990" y="688" class="name">JSONL · 批次处理摘要</text>
+  <text x="990" y="718" class="label">调用数 / token / 耗时 / 估算费用</text>
+  <text x="990" y="746" class="muted">文档与批次过滤；警告和结果摘要</text>
+  <text x="990" y="769" class="small">当前并非覆盖全部后续动作的分布式 trace</text>
+
+  <rect x="48" y="829" width="856" height="181" rx="12" class="panel"/>
+  <text x="70" y="865" class="section">独立排期入口</text>
+  <text x="70" y="892" class="muted">人工批准后，显式发起排期；候选人图不自动触发外部动作</text>
+  <rect x="70" y="914" width="210" height="56" rx="8" class="node"/>
+  <text x="175" y="948" text-anchor="middle" class="label">建轮 / 冻结名单</text>
+  <rect x="356" y="914" width="210" height="56" rx="8" class="node"/>
+  <text x="461" y="948" text-anchor="middle" class="label">排序 / 原子占槽</text>
+  <rect x="642" y="914" width="240" height="56" rx="8" fill="#e8f4ee" stroke="#75a591"/>
+  <text x="762" y="948" text-anchor="middle" class="label">模拟建会 → 模拟通知</text>
+  <path d="M280 942H350" class="line"/><path d="M566 942H636" class="line"/>
+  <text x="70" y="993" class="small">四个 45 分钟时段；候补；会议与通知为 mock，CLI 可演示失败动作重试。</text>
+  <rect x="940" y="829" width="452" height="181" rx="12" fill="#123d36"/>
+  <text x="964" y="865" style="fill:white;font-size:21px;font-weight:700">模型边界</text>
+  <text x="964" y="899" style="fill:#e4efeb;font-size:16px">模型：提取事实、任职和原文引用</text>
+  <text x="964" y="929" style="fill:#e4efeb;font-size:16px">程序：定位证据、规则评分、分配时段</text>
+  <text x="964" y="959" style="fill:#e4efeb;font-size:16px">人工：核对不确定信息、决定是否批准</text>
+  <text x="964" y="991" style="fill:#b4cec5;font-size:13px">不展示未经实现或验证的模型内部思维过程</text>
+  <text x="48" y="1051" class="muted">现状图 · 单用户本地工程案例。复核重抽取、缓存失效、审批版本等限制详见 docs/architecture.md。</text>
+  <text x="48" y="1076" class="small">Source: app/api.py · src/workflow.py · src/review.py · src/scheduler.py · src/repository.py</text>
+</svg>
