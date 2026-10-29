@@ -15,6 +15,10 @@ def list_resumes(resume_dir: Path = RESUME_DIR) -> List[Path]:
     ALLOWED_UPLOAD_EXTS 保持一致，否则上传的 docx 会既列不出也扫不进批次。
     """
     exts = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".docx"}
+    if not resume_dir.is_dir():
+        # 上传目录不存在（如 CI checkout 不含本地简历库）时返回空列表，
+        # 而不是对调用方抛 FileNotFoundError → /api/resumes 稳定返回 200 + []。
+        return []
     files = []
     for p in resume_dir.iterdir():
         if p.is_file() and p.suffix.lower() in exts:
