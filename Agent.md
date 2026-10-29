@@ -2,7 +2,7 @@
 
 > 这是一份操作手册，不是设计文档。改代码前先读这一页；不确定的约定以 `src/` 源码为准，不要凭记忆臆造。
 
-> **2026-10-28 收尾定位**：企业面试场景的工程作品集。当前以整理架构、模型边界和已有证据为完成范围，不继续扩成招聘产品。当前说明以 [README](README.md)、[架构与实现限制](docs/architecture.md)、[工程参考](docs/engineering-reference.md) 为准；历史规格与 HTML 升级报告不作为新任务授权。
+> **2026-10-29 收尾定位**：企业面试场景的工程作品集。当前以三条成果的缺陷修复、有限前端整理和已有证据为完成范围，不继续扩成招聘产品。当前说明以 [README](README.md)、[架构与实现限制](docs/architecture.md)、[工程参考](docs/engineering-reference.md) 为准；历史规格与 HTML 升级报告不作为新任务授权。
 
 ## 1. 这个项目是什么
 
@@ -18,7 +18,7 @@ python -m venv .venv
 pip install -r requirements.txt
 Copy-Item .env.example .env      # 再填 PII_ENCRYPT_KEY 等密钥；.env 不入库
 cd frontend; npm install; cd ..
-.venv\Scripts\python.exe -m pytest -q   # 应 175 passed
+.venv\Scripts\python.exe -m pytest -q   # 应 195 passed
 ```
 
 ## 2. 目录职责速览
@@ -53,7 +53,7 @@ cd frontend; npm install; cd ..
 Windows PowerShell，虚拟环境已建好：
 
 ```powershell
-# 全量测试（当前 175 passed，改完必须保持全绿）
+# 全量测试（当前 195 passed，改完必须保持全绿）
 .venv\Scripts\python.exe -m pytest -q
 
 # 起后端
@@ -88,13 +88,13 @@ cd frontend; npm run build     # 产物给 nginx 反代 /api
 parse → extract → validate → screen → score → review(interrupt) → apply → report → END
 ```
 
-- `parse` / `validate` 失败不中断流程，而是**条件路由进 `review` 转人工**，绝不静默丢弃。
+- `parse` / `validate` 失败先经 score 保存未知评估（公开得分 null），再进入 review 人工暂停，不对失败输入进行数值评分。
 - `review` 节点 `interrupt` 等待人工审批；审批服务先持久化审批，再通过 `Command(resume=decision)` 恢复到 `apply/report`。
 - 排期是独立子链：`create_round → close_round → schedule_round（按总分>MiC>海外>管理排序 + 原子占槽）→ run_external（建会→通知）`；**建会/通知失败只重试失败动作**，不整体重跑。
 
 ### 4.2 证据引用铁律（最高优先级）
 
-- 每条结论必须带 `quote`（简历原文切片）+ 程序计算的字符偏移，可回溯到原文对应位置。
+- 新分析的每条事实必须带 `quote`（简历原文切片）+ 程序计算的字符偏移，可回溯到原文对应位置。
 - 硬条件三态：`pass / fail / unknown`；**unknown = 沉默 ≠ 通过**，一律降级转人工复核。
 - 模型抽取包含两项有限检查：① 引文包含该事实领域的证据词，否则部分事实降级 UNKNOWN；② 任职年份可在引文定位（见 `tests/test_t11`）。这不等同于证明语义足以支持具体档位。
 
@@ -106,7 +106,7 @@ parse → extract → validate → screen → score → review(interrupt) → ap
 
 ### 4.4 身份与多租户边界
 
-- 分别保存文档身份、岗位/抽取器版本和执行线程身份；当前同文档同岗位版本仍会覆盖评估，旧审批可能影响新批次。不要把设计上的身份区分表述为已实现严格评估版本隔离。
+- 文档身份按内容区分；执行线程包含批次、文档与配置身份；每次执行保存独立评估快照。审批绑定 assessment_id 与岗位版本，不覆盖旧评估，也不能把旧审批用于新执行。
 - `documents` 表已预留 `org_id` 列，为多租户（P2）留边界；当前单租户，不要提前实现多租户逻辑。
 
 ### 4.5 PII 红线
@@ -117,7 +117,7 @@ parse → extract → validate → screen → score → review(interrupt) → ap
 
 ## 5. 改代码的规则
 
-1. **保持 pytest 全绿**（当前 175 passed）。任何提交前跑一次全量。
+1. **保持 pytest 全绿**（当前 195 passed）。任何提交前跑一次全量。
 2. **新功能必须配测试**，命名 `tests/test_tN_*.py`（N 对应需求条目）。
 3. **真实简历 / PII 不得写进仓库或文档**；演示一律用 `demo/` 合成数据。
 4. 不要破坏两个开关的语义：`AUTH_ENABLED`（默认关，单用户认证）、`PII_ENCRYPT_KEY`（PII 字段加密）。
@@ -134,11 +134,11 @@ parse → extract → validate → screen → score → review(interrupt) → ap
 ## 7. 运行边界与已确认限制
 
 - 单用户本地部署定位，未做多用户/多租户。
-- `scheduler / calendar / notifier` 均为 **mock 实现**，真实接入换 `providers/` 即可。
+- `calendar / notifier` 为 **mock 实现**；scheduler 是真实规则排期器，真实接入换 `providers/` 即可。
 - Docker 未实机构建验证：`compose` 需 v2.24+，前端镜像用 nginx 反代 `/api`。
 - OCR：tesseract 可选，缺失时自动回退 rapidocr。
-- 复核重抽取、同路径文件缓存失效、审批版本与后台线程恢复限制见 [架构说明](docs/architecture.md#当前实现限制)。这些是已确认限制，不应仅因 README 曾将旧审批显示写成预期就忽略其排期影响。
-- CLI 声明 reject 但内部枚举不支持；文档示例只使用 approve / hold。MCP 默认代理不携带登录 Cookie。
+- 证据快照、文件内容版本、审批绑定与失败重试已修复；历史数据、单进程任务与隐私边界见 [架构说明](docs/architecture.md#收尾修复与当前实现限制)。
+- CLI 决策与内部枚举一致：approve / hold / needs_review。MCP 在配置认证后会登录取得 Cookie，审批工具必须传递所查看的评估身份。
 
 ## 8. 易错点速查
 
@@ -152,3 +152,5 @@ parse → extract → validate → screen → score → review(interrupt) → ap
 ---
 
 *项目起源于 AI Agent 工程师二面现场题：基于多智能体框架对 214 份 PDF 简历完成解析→筛选→评分→复核→排期→建会通知的完整链路。*
+
+当前收尾验收见 [docs/acceptance.md](docs/acceptance.md)。新增场景测试放在 T16/T17；旧 T8 的“GET 现场抽取”断言已经替换为“GET 仅读取持久快照”，不要恢复旧行为。

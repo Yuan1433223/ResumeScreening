@@ -18,7 +18,7 @@
   </defs>
   <rect width="1440" height="1100" fill="#f3f6f7"/>
   <rect x="48" y="40" width="7" height="69" rx="3" fill="#176858"/>
-  <text x="72" y="57" class="eyebrow">ENGINEERING CASE STUDY / 2026-10-28</text>
+  <text x="72" y="57" class="eyebrow">ENGINEERING CASE STUDY / 2026-10-29</text>
   <text x="72" y="99" class="title">ResumeScreening · 系统架构与职责边界</text>
   <text x="1392" y="99" text-anchor="end" class="sub">模型抽取 · 规则评分 · 人工审批</text>
 
@@ -67,7 +67,7 @@
   <text x="636" y="480" text-anchor="middle" class="small">通过 / 失败 / 未知</text>
   <rect x="728" y="405" width="144" height="89" rx="9" class="node"/>
   <text x="800" y="434" text-anchor="middle" class="code">score</text>
-  <text x="800" y="459" text-anchor="middle" class="label">八维规则评分</text>
+  <text x="800" y="459" text-anchor="middle" class="label">评分 / 未知评估</text>
   <text x="800" y="480" text-anchor="middle" class="small">未知项保留 unknown</text>
   <rect x="892" y="405" width="144" height="89" rx="9" fill="#e8f4ee" stroke="#75a591" stroke-width="1.5"/>
   <text x="964" y="434" text-anchor="middle" class="code">review</text>
@@ -82,10 +82,10 @@
   <text x="1292" y="459" text-anchor="middle" class="label">汇总报告</text>
   <text x="1292" y="480" text-anchor="middle" class="small">END</text>
   <path d="M216 447H232" class="line"/><path d="M380 447H396" class="line"/><path d="M544 447H560" class="line"/><path d="M708 447H724" class="line"/><path d="M872 447H888" class="line"/><path d="M1036 447H1052" class="line"/><path d="M1200 447H1216" class="line"/>
-  <path d="M144 494V528H944V498" class="dash"/>
-  <path d="M472 494V514H964V498" class="dash"/>
-  <rect x="304" y="530" width="355" height="27" rx="5" fill="white"/>
-  <text x="319" y="549" class="muted">解析失败 / 证据校验失败 → 直接转人工</text>
+  <path d="M144 494V528H780V498" class="dash"/>
+  <path d="M472 494V514H800V498" class="dash"/>
+  <rect x="304" y="530" width="405" height="27" rx="5" fill="white"/>
+  <text x="319" y="549" class="muted">解析 / 校验失败 → 保存未知评估 → 人工复核</text>
   <text x="72" y="576" class="small">正常分析也会暂停等待审批；recommend / hold 是机器建议。黄色节点表示模型能力所在的环节。</text>
 
   <path d="M720 594V622H260V648M720 622V648M720 622H1180V648" class="dash"/>
@@ -122,6 +122,6 @@
   <text x="964" y="929" style="fill:#e4efeb;font-size:16px">程序：定位证据、规则评分、分配时段</text>
   <text x="964" y="959" style="fill:#e4efeb;font-size:16px">人工：核对不确定信息、决定是否批准</text>
   <text x="964" y="991" style="fill:#b4cec5;font-size:13px">不展示未经实现或验证的模型内部思维过程</text>
-  <text x="48" y="1051" class="muted">现状图 · 单用户本地工程案例。复核重抽取、缓存失效、审批版本等限制详见 docs/architecture.md。</text>
+  <text x="48" y="1051" class="muted">现状图 · 单用户本地工程案例。证据与审批绑定同一评估；历史数据和本地任务边界详见 docs/architecture.md。</text>
   <text x="48" y="1076" class="small">Source: app/api.py · src/workflow.py · src/review.py · src/scheduler.py · src/repository.py</text>
 </svg>

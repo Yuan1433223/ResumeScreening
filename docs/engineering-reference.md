@@ -1,6 +1,6 @@
 # 工程参考
 
-核对日期：2026-10-28。当前架构与实现限制见 [架构说明](architecture.md)；本页保留代码导航、配置和命令，避免 README 承担开发档案的全部内容。
+核对日期：2026-10-29。当前架构与实现限制见 [架构说明](architecture.md)；本页保留代码导航、配置和命令，避免 README 承担开发档案的全部内容。
 
 ## 代码地图
 
@@ -82,6 +82,8 @@
 
 | 键 | 用途 | 默认值 | 出处 | 是否必填 |
 | --- | --- | --- | --- | --- |
+| `RESUME_DIR` | 简历库目录，可用于隔离验收 | 项目根目录内 `海外项目负责招聘简历/` | `src/config.py` | 否 |
+| `ANALYSIS_DATE` | 任职年限计算截止日，可固定历史口径 | 启动进程的本地日期 | `src/config.py` | 否 |
 | `RESUME_DB_PATH` | 业务 SQLite 路径 | `data/resume.db` | `src/config.py` | 否 |
 | `RESUME_CHECKPOINT_PATH` | LangGraph 检查点 SQLite 路径 | `data/resume.checkpoints.db` | `src/config.py` | 否 |
 | `MODEL_ENABLED` | 云端模型抽取开关（1/true/yes 开） | `0`（关，规则版） | `src/config.py` / `.env.example` | 否 |
@@ -123,7 +125,7 @@ python main.py clean <document_id>
 python main.py graph --png
 ```
 
-`approve / hold` 可用于 CLI；参数声明中的 `reject` 与内部枚举不一致，不作为可用示例。`graph --png` 可能依赖外部渲染服务，失败时回退输出 Mermaid 文本；文档中的架构 SVG 可直接离线阅读。
+CLI 支持 `approve / hold / needs_review`，与内部枚举一致。`graph --png` 可能依赖外部渲染服务，失败时回退输出 Mermaid 文本；文档中的架构 SVG 可直接离线阅读。
 
 默认导出不附加三个独立 PII 列；`--redact` 额外附加打码后的姓名、手机号和邮箱。它不会全面清洗报告、文件名或原文中的所有个人信息，因此不能把该开关当作完整匿名化证明。
 
@@ -134,11 +136,11 @@ python mcp_server.py
 python mcp_server.py --transport http --port 8018
 ```
 
-MCP 是 API 薄代理，不能直接当作新的 LangGraph deployment server 使用。默认代理不处理后端登录会话；开启后端认证时需另行处理认证适配，当前配置不提供这一能力。
+MCP 是 API 薄代理，不能直接当作新的 LangGraph deployment server 使用。代理使用 Cookie 会话；后端返回 401 且本地开启 AUTH_ENABLED 时，用同一配置中的用户名和密码登录后重试一次。不会通过未认证旁路访问业务接口。
 
 ## 验证基线
 
-2026-10-28 当前代码：`python -m pytest -q` 为 **175 passed**；`frontend` 下 `npm run build` 通过，存在约 590 KB 的主 JS 包体积提示。测试不调用真实模型或真实会议服务，构建成功也不代表 Docker 已验证。
+2026-10-29 当前代码：`python -m pytest -q` 为 **194 passed**；`frontend` 下 `npm run build` 通过，首页主脚本约 180 KB，辅助看板单独按需加载。测试不调用真实模型或真实会议服务，构建成功也不代表 Docker 已验证。
 
 ## 文档分工
 
@@ -148,3 +150,24 @@ MCP 是 API 薄代理，不能直接当作新的 LangGraph deployment server 使
 - [协作手册](../Agent.md)：维护约定。
 - [原始开发规格](../DEVELOPMENT_SPEC.md)：历史设计记录，不是当前待办。
 - `architecture-upgrade.html`、`competitive-benchmark.html`：历史探索报告，保留旧内容并醒目标记；其中升级路线和成熟度评分不代表当前承诺。
+
+
+## 审批请求与旧数据兼容
+
+POST `/api/documents/{document_id}/approve` 的端点保持不变；请求必须包括以下字段：
+
+```json
+{
+  "assessment_id": "从 GET review 的 assessment.id 取得",
+  "expected_version": "从 GET review 的 assessment.job_version 取得",
+  "request_id": "客户端为这次决定保存的稳定唯一键",
+  "decision": "approve",
+  "reason": "人工核对理由"
+}
+```
+
+缺少评估身份返回 428；旧页面提交到更新评估、复用幂等键改决定、已关闭批次新增决定等返回 409。审批保存后恢复失败返回 `recovery_pending=true`，客户端保留相同键和原决定重试；不会新增一条审批。当前前端和 MCP 客户端均传递该契约。
+
+历史评估仍可读取，但没有快照时显示说明，不在 GET 内重抽取。新执行使用独立评估 ID，不覆盖旧事实和旧审批。原文件按内容存于业务库同级 `documents/` 目录；原展示文件名单独保存。修改输入文件不会改变旧评估所展示的原文。该目录含原文，适用与业务库相同的数据保护边界；`purge --delete-files` 才会删除对应文件。
+
+GET `/api/documents/{id}/review?assessment_id=...` 可只读查看特定历史评估。GET `/api/scheduling` 与 POST `/api/scheduling/run` 接受可选 `batch_id` 查询参数，默认沿用最近批次。重复 POST 返回已有预约并补失败动作，当前前端会固定到所选批次。单进程启动时将遗留 running 任务标记为 interrupted；不提供分布式自动续跑。
